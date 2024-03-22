@@ -140,26 +140,37 @@ def ndvi_sliding_window_rsq(array_3d, column_labels):
     print(f"The best NDVI window is: {results_df.loc[best_idx, 'Columns Averaged']} with window size {results_df.loc[best_idx, 'Window Size']} yielding R-squared: {results_df.loc[best_idx, 'R-squared']}")
 
 
+def average_columns_and_save(array_3d, column_labels):
+    # Define the start and end dates for the averaging period
+    start_column_index = 16
+    end_column_index = 21
 
-def find_nan_indices(array):
-    nan_indices = []
-    type_error_indices = []
-    for index, value in enumerate(array):
-        try:
-            # Check if the value is NaN
-            if np.isnan(value):
-                nan_indices.append(index)
-        except TypeError:
-            # This catches cases where the value cannot be compared with NaN (e.g., strings)
-            type_error_indices.append(index)
-            continue
-    return nan_indices, type_error_indices
+    # Initialize an empty DataFrame for storing the averages
+    averages_df = pd.DataFrame()
+
+    # Define the years for each layer
+    years = list(range(2001, 2024))  # From 2001 to 2023
+
+    # Iterate through each layer and compute the average for the specified dates
+    for i, layer in enumerate(array_3d):
+        # Convert the layer to a DataFrame
+        df = pd.DataFrame(layer, columns=column_labels)
+        
+        # Calculate the average of the columns within the specified date range
+        average_values = df.iloc[:, start_column_index:end_column_index + 1].mean(axis=1)
+        new_df = df.iloc[:, start_column_index:end_column_index + 1]
+
+        # Add the average values as a new column in the averages_df DataFrame
+        averages_df[years[i]] = average_values
+
+    # Save the DataFrame to a CSV file in the 'data/' directory
+    averages_df.to_csv('data/ndvi_averages_june10_aug29.csv', index=False)
 
 
 
 # Code Execution
-filepath = 'data/kenya_yield_ndvi.xlsx'  # Replace with your file path
-array_3d, column_labels = read_excel_to_3d_array(filepath)
+#filepath = 'data/kenya_yield_ndvi.xlsx'  # Replace with your file path
+#array_3d, column_labels = read_excel_to_3d_array(filepath)
 #ndvi_rsq(array_3d, columns)
-ndvi_sliding_window_rsq(array_3d, column_labels)
+#ndvi_sliding_window_rsq(array_3d, column_labels)
 
