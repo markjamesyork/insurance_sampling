@@ -62,6 +62,27 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
     for key in rmse_results.keys():
         print('Mean rmse for %d km distance is %f.' % (key, np.mean(rmse_results[key])))
 
+    #Create and save a barchart of yield rmse for each max_dist setting
+    # Sort max_dist in ascending order for plotting
+    sorted_max_dists = sorted(rmse_results.keys())
+    avg_rmses = [np.mean(rmse_results[max_dist]) for max_dist in sorted_max_dists]
+
+    # Creating the line graph
+    plt.figure(figsize=(10, 6))
+    plt.plot(sorted_max_dists, avg_rmses, marker='o', linestyle='-', color='skyblue')
+
+    # Annotate each point with its RMSE value
+    for i, value in enumerate(avg_rmses):
+        plt.text(sorted_max_dists[i], value, f"{value:.2f}", ha='center', va='bottom')
+
+    plt.xlabel('Maximum Distance (km)')
+    plt.ylabel('Average RMSE')
+    plt.title('Average RMSE vs Maximum Distance')
+    plt.grid(True)
+
+    # Save the chart
+    plt.savefig('graphs/    yield_rmse_vs_distance.png')
+
     return rmse_results
 
 # Example usage
