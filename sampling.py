@@ -19,12 +19,12 @@ import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
+import sys
 
 
 class MaizeYieldSampler:
     def __init__(self):
         self.yield_data = None
-        self.covariate_data = None
         self.covariance_matrix = None
         self.conditional_mu = None
         self.conditional_sigma = None
@@ -34,34 +34,72 @@ class MaizeYieldSampler:
     def read_yield_data(self, file_path):
         self.yield_data = pd.read_csv(file_path)
 
-    def read_covariate_data(self, file_path):
-        self.covariate_data = pd.read_csv(file_path)
-
-    def initialize_covariance(self, year):
+    def initialize_covariance(self, file_path, year):
         # Calculate the covariance matrix for a given year before any samples are taken
-        filtered_df = self.covariate_data[self.covariate_data['yield_data_year'] == year]
-        reduced_df = filtered_df.iloc[:, 2:].to_numpy().T
+
+        # Read covariate data
+        df = pd.read_csv(file_path)
+
+        # Filter data to remove nans and data from target year
+        if 'yield_data_year' in df.columns: df = df[df['yield_data_year'] == year] #Case where most locations only have data for one year
+        df = df.dropna(subset=[str(year)]) #Remove rows which have no covariate data in the target year
+        df = df.drop(str(year), axis=1) #Drop data from the target year
+        reduced_df = df.iloc[:, 2:].to_numpy().T
+
         # Standardize the data
         scaler = StandardScaler().fit(reduced_df)
         standardized_data = scaler.transform(reduced_df)
         
         # Calculate the covariance matrix of the standardized data
-        raw_covariance_matrix =np.cov(standardized_data, rowvar=False)
+        masked_data = np.ma.masked_array(standardized_data, np.isnan(standardized_data)) #mask nan values
+        raw_covariance_matrix = np.ma.cov(masked_data, rowvar=False)
 
         # Use Higham approximation to find the closest valid PSD covariance matrix to the raw covariance matrix
         self.covariance_matrix = self.higham_approximation(raw_covariance_matrix)
 
     def next_sample_random(self, year):
         # Randomly select an unsampled index
+
         filtered_df = self.yield_data[self.yield_data.year == year]
-        all_indices = set(filtered_df.index) #set(range(len(self.yield_data[self.yield_data.year == year])))
+        all_indices = set(filtered_df.index)
         remaining_indices = list(all_indices - self.sampled_indices)
+
         if remaining_indices:
             next_sample_id = np.random.choice(remaining_indices)
             yield_val = filtered_df.loc[next_sample_id, 'yield']
             self.sampled_indices.add(next_sample_id)
             return next_sample_id, yield_val
         else:
+            return None, None
+
+    def next_sample_mic_greedy(self, year):
+        # Select the unsampled index which greedily maximizes mutual information
+
+        filtered_df = self.yield_data[self.yield_data.year == year]
+        all_indices = set(filtered_df.index)
+        remaining_indices = list(all_indices - self.sampled_indices)
+
+        if remaining_indices:
+            # Calculate the mutual information gain from selecting each remaining index and track the higehst one
+            delta = 0
+            sigma_AA = self.covariance_matrix[np.ix_(self.sampled_indices, self.sampled_indices)]
+            Sigma_AA_inv = np.linalg.inv(Sigma_AA)
+            for index in remaining_indices:
+                sigma_Ay = self.covariance_matrix[np.ix_(index, self.sampled_indices)] # Covariance matrix slice of A and y ###### may need to write as "[index], self.sampled_indices" or "set(index)"
+                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index removed
+                sigma_complAy = self.covariance_matrix[np.ix_(index, remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
+                delta_tmp = (self.covariance_matrix[index, index] - sigma_Ay @ sigma_AA_inv @ sigma_Ay.T) \
+                            / (self.covariance_matrix[index, index] - sigma_complAy @ sigma_AA_inv @ sigma_complAy.T)
+                if delta_tmp > delta:
+                    delta = delta_tmp
+                    next_sample_id = index
+
+            # Pull yield value for selected sample and add to list of sampled indices
+            yield_val = filtered_df.loc[next_sample_id, 'yield']
+            self.sampled_indices.add(next_sample_id)
+            return next_sample_id, yield_val
+
+        else: #Return none if all indices have already been sampled
             return None, None
 
     def update_predictions(self):
@@ -117,9 +155,7 @@ class MaizeYieldSampler:
         Sigma21 = self.covariance_matrix[np.ix_(measured_indices, self.sampled_indices)]
 
         # Update the conditional mean and covariance
-        #Alternative matrix inversion technique with np.linalg.solve(): https://stackoverflow.com/questions/31256252/why-does-numpy-linalg-solve-offer-more-precise-matrix-inversions-than-numpy-li
-        #Sigma22_inv = np.linalg.inv(Sigma22)
-        Sigma22_inv = np.linalg.solve(Sigma22, np.identity(Sigma22.shape[0]))
+        Sigma22_inv = np.linalg.inv(Sigma22)
         updated_Sigma = Sigma11 - Sigma12 @ Sigma22_inv @ Sigma21
 
         self.conditional_sigma = updated_Sigma
@@ -127,26 +163,41 @@ class MaizeYieldSampler:
 
 
 # Execution:
-yield_data_path = 'data/kenya_yield_data.csv'
-covariate_data_path = 'data/kenya_ndvi.csv'
+# Set region-specific parameters
+region = 'Iowa'
+if region == 'Iowa':
+    yield_data_path = 'data/iowa_yield_data.csv'
+    covariate_data_path = 'data/iowa_yield_detrended.csv'
+    max_samples = 99 #number of counties in Iowa
 
+elif region == 'Kenya':
+    yield_data_path = 'data/kenya_yield_data.csv'
+    covariate_data_path = 'data/kenya_ndvi.csv'
+    max_samples = 776 #number of samples in Kenya's lowest-sample year
+
+else:
+    print('The region you listed has not been paramaterized yet.')
+    sys.exit()
+
+# Load data and set region-agnostic parameters
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
-sampler.read_covariate_data(covariate_data_path)
-years_to_sample = [2023]
-n_reps = 100
-max_samples = 776
+sampler.yield_data = sampler.yield_data.dropna()
+years_to_sample = [2019]
+n_reps = 1
 
+# Run simulation
 for year in years_to_sample:
-    #sampler.initialize_covariance(year)
+    sampler.initialize_covariance(covariate_data_path, year)
     #cov_matrix_df = pd.DataFrame(sampler.covariance_matrix)
     #cov_matrix_df.to_csv('data/covariance_matrix_2019.csv', index=False)
-    sampler.set_yield_priors(year)
+    #sampler.set_yield_priors(year)
     rep = 0
     true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
     sample_mean = np.zeros((max_samples, n_reps))
 
     while rep < n_reps:
+        if rep % 13 == 0: print('Rep number %d' % rep)
         stop = False
         n_samples = 0
         samples = []
@@ -155,12 +206,17 @@ for year in years_to_sample:
         while stop == False:
             #Pull Sample
             next_sample_idx, yield_val = sampler.next_sample_random(year)
+            next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
 
             #Update Yield Estimates
+            if yield_val == None: #Stop sampling once all samples have been taken
+                stop = True
+                break
+
             samples += [yield_val]
             sample_mean[n_samples, rep] = np.mean(samples)
 
-            #sampler.update_cov_matrix()
+            sampler.update_cov_matrix()
 
             #Stopping
             n_samples += 1
@@ -169,16 +225,18 @@ for year in years_to_sample:
         sampler.sampled_indices = set()
         rep += 1
 
-    #Calc results
+    # Calc results
     squared_error = np.square(sample_mean - true_yield_mean)
     rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
 
-    # Create a plot of the column means
+    # Chart results
     plt.figure(figsize=(8, 6))
     plt.plot(rmse, marker='o', linestyle='-', color='b')
-    plt.title('RMSE vs Number of Samples Taken - Kenya Maize 2019')
+    plt.title('RMSE vs Number of Samples Taken - {region} Maize')
     plt.xlabel('Number of samples taken')
-    plt.ylabel('RMSE in tons per hectare')
+    if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
+    else: plot.ylabel('RMSE in tons per hectare')
     plt.grid(True)
+    plt.savefig('graphs/{region}_maize_yield_rmse_random_sampling')
     plt.show()
 
