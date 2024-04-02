@@ -5,7 +5,7 @@ from sklearn.metrics import root_mean_squared_error
 
 def haversine(lat1, lon1, lats, lons):
     """
-    Vectorized Haversine function to calculate distances between one point and a vector of points.
+    Vectorized Haversine function to calculate distances between one point (lat1, lon1) a vector of points (lats, lons).
     """
     # Convert decimal degrees to radians
     lat1, lon1, lats, lons = map(np.radians, [lat1, lon1, lats, lons])
@@ -33,7 +33,7 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
             for dists in dist_matrix:
                 # Filter points within max_dist and calculate average yield
-                close_points_yields = other_years_data['yield'].values[dists <= max_dist]
+                close_points_yields = other_years_data['yield'].values[(dists <= max_dist)]
                 predicted_yield = close_points_yields.mean() if len(close_points_yields) > 0 else np.nan
                 predictions.append(predicted_yield)
 
@@ -85,9 +85,10 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
     return rmse_results
 
-# Example usage
+'''
+# Execution:
 yield_data = pd.read_csv('data/kenya_yield_data.csv')  # Update with your actual file path
 target_years = [2019, 2020, 2021, 2022, 2023]
-max_dists = [5, 25, 50, 100, 150, 250, 500, 1000]  # Distances in kilometers
+max_dists = [5, 10, 25, 50, 100, 150, 250, 500]  # Distances in kilometers
 rmse_results = calculate_rmse_for_distances(yield_data, target_years, max_dists)
-
+'''

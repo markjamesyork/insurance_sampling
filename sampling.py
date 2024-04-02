@@ -12,10 +12,12 @@
 '''
 
 import cvxpy as cp
+from calc_yield_prior import haversine #another script in this project
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
 
 
@@ -24,6 +26,8 @@ class MaizeYieldSampler:
         self.yield_data = None
         self.covariate_data = None
         self.covariance_matrix = None
+        self.conditional_mu = None
+        self.conditional_sigma = None
         self.sampled_indices = set()
         self.predictions = []
 
@@ -42,18 +46,23 @@ class MaizeYieldSampler:
         standardized_data = scaler.transform(reduced_df)
         
         # Calculate the covariance matrix of the standardized data
-        self.covariance_matrix = np.cov(standardized_data, rowvar=False)
+        raw_covariance_matrix =np.cov(standardized_data, rowvar=False)
 
-    def next_sample_random(self):
+        # Use Higham approximation to find the closest valid PSD covariance matrix to the raw covariance matrix
+        self.covariance_matrix = self.higham_approximation(raw_covariance_matrix)
+
+    def next_sample_random(self, year):
         # Randomly select an unsampled index
-        all_indices = set(range(len(self.yield_data)))
+        filtered_df = self.yield_data[self.yield_data.year == year]
+        all_indices = set(filtered_df.index) #set(range(len(self.yield_data[self.yield_data.year == year])))
         remaining_indices = list(all_indices - self.sampled_indices)
         if remaining_indices:
-            next_sample = np.random.choice(remaining_indices)
-            self.sampled_indices.add(next_sample)
-            return next_sample
+            next_sample_id = np.random.choice(remaining_indices)
+            yield_val = filtered_df.loc[next_sample_id, 'yield']
+            self.sampled_indices.add(next_sample_id)
+            return next_sample_id, yield_val
         else:
-            return None
+            return None, None
 
     def update_predictions(self):
         # Update model's predictions based on newly selected samples
@@ -80,21 +89,96 @@ class MaizeYieldSampler:
         problem.solve()
         return X.value
 
-# Example usage:
+    def set_yield_priors(self, year):
+        '''Find prior as average yield for all fields within max_dist of target field in all years other than current year'''
+        max_dist = 250 #maximum distance yields to consider, in km
+        target_data = self.yield_data[self.yield_data['year'] == year]
+        other_years_data = self.yield_data[self.yield_data['year'] != year]
+
+        # Pre-calculate distances for each target point to all other points from different years
+        dist_matrix = np.array([haversine(row['latitude'], row['longitude'], other_years_data['latitude'].values, other_years_data['longitude'].values) for _, row in target_data.iterrows()])
+
+        prior_yields = []
+        for dist in dist_matrix:
+            # Filter points within max_dist and calculate average yield
+            close_points_yields = other_years_data['yield'].values[dist <= max_dist]
+            predicted_yield = close_points_yields.mean() if len(close_points_yields) > 0 else np.nan
+            prior_yields.append(predicted_yield)
+
+        self.conditional_mu = prior_yields
+
+
+    def update_cov_matrix(self):
+        #remaining_indices is a list of the indices of the counties which have not yet been measured
+        remaining_indices = list(all_indices - self.sampled_indices)
+        Sigma11 = self.covariance_matrix[np.ix_(remaining_indices, self.sampled_indices)]
+        Sigma12 = self.covariance_matrix[np.ix_(remaining_indices, self.sampled_indices)]
+        Sigma22 = self.covariance_matrix[np.ix_(measured_indices, self.sampled_indices)]
+        Sigma21 = self.covariance_matrix[np.ix_(measured_indices, self.sampled_indices)]
+
+        # Update the conditional mean and covariance
+        #Alternative matrix inversion technique with np.linalg.solve(): https://stackoverflow.com/questions/31256252/why-does-numpy-linalg-solve-offer-more-precise-matrix-inversions-than-numpy-li
+        #Sigma22_inv = np.linalg.inv(Sigma22)
+        Sigma22_inv = np.linalg.solve(Sigma22, np.identity(Sigma22.shape[0]))
+        updated_Sigma = Sigma11 - Sigma12 @ Sigma22_inv @ Sigma21
+
+        self.conditional_sigma = updated_Sigma
+
+
+
+# Execution:
 yield_data_path = 'data/kenya_yield_data.csv'
 covariate_data_path = 'data/kenya_ndvi.csv'
 
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.read_covariate_data(covariate_data_path)
-sampler.initialize_covariance(2019)
-cov_matrix_df = pd.DataFrame(sampler.covariance_matrix)
-cov_matrix_df.to_csv('data/covariance_matrix_2019.csv', index=False)
+years_to_sample = [2023]
+n_reps = 100
+max_samples = 776
 
-higham_approx = sampler.higham_approximation(sampler.covariance_matrix)
-higham_approx_df = pd.DataFrame(higham_approx)
-higham_approx_df.to_csv('data/higham_approx_2019.csv', index=False)
+for year in years_to_sample:
+    #sampler.initialize_covariance(year)
+    #cov_matrix_df = pd.DataFrame(sampler.covariance_matrix)
+    #cov_matrix_df.to_csv('data/covariance_matrix_2019.csv', index=False)
+    sampler.set_yield_priors(year)
+    rep = 0
+    true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
+    sample_mean = np.zeros((max_samples, n_reps))
 
+    while rep < n_reps:
+        stop = False
+        n_samples = 0
+        samples = []
+        sampler.conditional_sigma = sampler.covariance_matrix #reset conditional sigma matrix to prior covariance matrix before each sampling run
 
-distance = np.linalg.norm(sampler.covariance_matrix - higham_approx, 'fro')
-print(f"Distance between original and Higham approximation: {distance}")
+        while stop == False:
+            #Pull Sample
+            next_sample_idx, yield_val = sampler.next_sample_random(year)
+
+            #Update Yield Estimates
+            samples += [yield_val]
+            sample_mean[n_samples, rep] = np.mean(samples)
+
+            #sampler.update_cov_matrix()
+
+            #Stopping
+            n_samples += 1
+            if n_samples >= max_samples: stop = True
+
+        sampler.sampled_indices = set()
+        rep += 1
+
+    #Calc results
+    squared_error = np.square(sample_mean - true_yield_mean)
+    rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
+
+    # Create a plot of the column means
+    plt.figure(figsize=(8, 6))
+    plt.plot(rmse, marker='o', linestyle='-', color='b')
+    plt.title('RMSE vs Number of Samples Taken - Kenya Maize 2019')
+    plt.xlabel('Number of samples taken')
+    plt.ylabel('RMSE in tons per hectare')
+    plt.grid(True)
+    plt.show()
+
