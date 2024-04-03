@@ -196,11 +196,14 @@ sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.yield_data = sampler.yield_data.dropna()
 sample_selection = 'mic_greedy'
-years_to_sample = [2006] #list(np.arange(1980, 2023))
-n_reps = 1
+years_to_sample = list(np.arange(1980, 2023))
+n_reps = 1 # We only need n_reps > 0 when sample_selection == 'random'
+rmse_matrix = np.zeros((len(years_to_sample), max_samples))
+min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
 
 # Run simulation
 for year in years_to_sample:
+    print('Sampling %d' % year)
     sampler.initialize_covariance(covariate_data_path, year)
     #cov_matrix_df = pd.DataFrame(sampler.covariance_matrix)
     #cov_matrix_df.to_csv('data/covariance_matrix_2019.csv', index=False)
@@ -224,6 +227,7 @@ for year in years_to_sample:
             #Update Yield Estimates
             if yield_val == None: #Stop sampling once all samples have been taken
                 stop = True
+                if n_samples < min_samples: min_samples = n_samples #tracks the lowest number of samples taken in a year
                 break
 
             samples += [yield_val]
@@ -241,15 +245,18 @@ for year in years_to_sample:
     # Calc results
     squared_error = np.square(sample_mean - true_yield_mean)
     rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
+    rmse_matrix[year - years_to_sample[0], :] = rmse
 
-    # Chart results
-    plt.figure(figsize=(8, 6))
-    plt.plot(rmse, marker='o', linestyle='-', color='b')
-    plt.title('RMSE vs Number of Samples Taken - %s Maize' % region)
-    plt.xlabel('Number of samples taken')
-    if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
-    else: plot.ylabel('RMSE in tons per hectare')
-    plt.grid(True)
-    plt.savefig('graphs/%s_maize_yield_rmse_random_sampling' % region)
-    plt.show()
+# Chart results
+rmse_chart_vector = np.mean(rmse_matrix[:,:min_samples], axis=0)
+print(rmse_chart_vector, rmse_chart_vector.shape)
+plt.figure(figsize=(8, 6))
+plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
+plt.title('RMSE vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
+plt.xlabel('Number of samples taken')
+if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
+else: plot.ylabel('RMSE in tons per hectare')
+plt.grid(True)
+plt.savefig('graphs/%s_maize_yield_rmse_%s_sampling' % (region, sample_selection))
+plt.show()
 
