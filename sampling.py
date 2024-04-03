@@ -76,21 +76,33 @@ class MaizeYieldSampler:
         # Select the unsampled index which greedily maximizes mutual information
 
         filtered_df = self.yield_data[self.yield_data.year == year]
+        filtered_df = filtered_df.reset_index(drop=True)
         all_indices = set(filtered_df.index)
         remaining_indices = list(all_indices - self.sampled_indices)
+        sampled_indices = list(self.sampled_indices)
 
         if remaining_indices:
             # Calculate the mutual information gain from selecting each remaining index and track the higehst one
-            delta = 0
-            sigma_AA = self.covariance_matrix[np.ix_(self.sampled_indices, self.sampled_indices)]
+            Sigma_AA = self.covariance_matrix[np.ix_(sampled_indices, sampled_indices)]
             Sigma_AA_inv = np.linalg.inv(Sigma_AA)
+            delta = -10**9
             for index in remaining_indices:
-                sigma_Ay = self.covariance_matrix[np.ix_(index, self.sampled_indices)] # Covariance matrix slice of A and y ###### may need to write as "[index], self.sampled_indices" or "set(index)"
-                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index removed
-                sigma_complAy = self.covariance_matrix[np.ix_(index, remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
-                delta_tmp = (self.covariance_matrix[index, index] - sigma_Ay @ sigma_AA_inv @ sigma_Ay.T) \
-                            / (self.covariance_matrix[index, index] - sigma_complAy @ sigma_AA_inv @ sigma_complAy.T)
-                if delta_tmp > delta:
+                # Create matrices needed to calculate mutual information
+                Sigma_Ay = self.covariance_matrix[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
+                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
+                Sigma_woAy = self.covariance_matrix[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
+                Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
+                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
+
+                # Calculate delta of each sample and update
+                if len(sampled_indices) == 0:
+                    delta_tmp = self.covariance_matrix[index, index] \
+                                / (self.covariance_matrix[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
+                else:
+                    delta_tmp = (self.covariance_matrix[index, index] - Sigma_Ay @ Sigma_AA_inv @ Sigma_Ay.T) \
+                                / (self.covariance_matrix[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
+                
+                if delta_tmp[0][0] > delta:
                     delta = delta_tmp
                     next_sample_id = index
 
@@ -183,7 +195,8 @@ else:
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.yield_data = sampler.yield_data.dropna()
-years_to_sample = [2019]
+sample_selection = 'mic_greedy'
+years_to_sample = [2006] #list(np.arange(1980, 2023))
 n_reps = 1
 
 # Run simulation
@@ -205,8 +218,8 @@ for year in years_to_sample:
 
         while stop == False:
             #Pull Sample
-            next_sample_idx, yield_val = sampler.next_sample_random(year)
-            next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
+            if sample_selection == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
+            elif sample_selection == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
 
             #Update Yield Estimates
             if yield_val == None: #Stop sampling once all samples have been taken
@@ -216,13 +229,13 @@ for year in years_to_sample:
             samples += [yield_val]
             sample_mean[n_samples, rep] = np.mean(samples)
 
-            sampler.update_cov_matrix()
+            #sampler.update_cov_matrix()
 
             #Stopping
             n_samples += 1
             if n_samples >= max_samples: stop = True
 
-        sampler.sampled_indices = set()
+        sampler.sampled_indices = set() #reset to no samples taken
         rep += 1
 
     # Calc results
@@ -232,11 +245,11 @@ for year in years_to_sample:
     # Chart results
     plt.figure(figsize=(8, 6))
     plt.plot(rmse, marker='o', linestyle='-', color='b')
-    plt.title('RMSE vs Number of Samples Taken - {region} Maize')
+    plt.title('RMSE vs Number of Samples Taken - %s Maize' % region)
     plt.xlabel('Number of samples taken')
     if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
     else: plot.ylabel('RMSE in tons per hectare')
     plt.grid(True)
-    plt.savefig('graphs/{region}_maize_yield_rmse_random_sampling')
+    plt.savefig('graphs/%s_maize_yield_rmse_random_sampling' % region)
     plt.show()
 
