@@ -80,6 +80,7 @@ class MaizeYieldSampler:
         all_indices = set(filtered_df.index)
         remaining_indices = list(all_indices - self.sampled_indices)
         sampled_indices = list(self.sampled_indices)
+        print('Number of indices sampled: ', len(sampled_indices))
 
         if remaining_indices:
             # Calculate the mutual information gain from selecting each remaining index and track the higehst one
@@ -157,20 +158,28 @@ class MaizeYieldSampler:
 
         self.conditional_mu = prior_yields
 
+    def update_mu_sigma(self, observed_index, observed_value):
+        """
+        Update the mean vector and covariance matrix after observing a new sample.
+        
+        Parameters:
+        observed_index (int): Index of the observed variable.
+        observed_value (float): Value of the observed variable.
+        """
+        # Extract relevant parts of the covariance matrix
+        sigma_ii = self.conditional_sigma[observed_index, observed_index]
+        sigma_oi = np.delete(self.conditional_sigma[:, observed_index], observed_index, 0)
+        sigma_oo = np.delete(np.delete(self.conditional_sigma, observed_index, 0), observed_index, 1)
+        
+        # Compute the Schur complement to update the covariance matrix for unobserved variables
+        self.conditional_sigma = sigma_oo - np.outer(sigma_oi, sigma_oi.T) / sigma_ii
+        
+        # Update the mean vector for unobserved variables
+        mu_i = self.conditional_mu[observed_index]
+        mu_o = np.delete(self.conditional_mu, observed_index, 0)
+        self.conditional_mu = mu_o + (observed_value - mu_i) * (sigma_oi / sigma_ii)
 
-    def update_cov_matrix(self):
-        #remaining_indices is a list of the indices of the counties which have not yet been measured
-        remaining_indices = list(all_indices - self.sampled_indices)
-        Sigma11 = self.covariance_matrix[np.ix_(remaining_indices, self.sampled_indices)]
-        Sigma12 = self.covariance_matrix[np.ix_(remaining_indices, self.sampled_indices)]
-        Sigma22 = self.covariance_matrix[np.ix_(measured_indices, self.sampled_indices)]
-        Sigma21 = self.covariance_matrix[np.ix_(measured_indices, self.sampled_indices)]
 
-        # Update the conditional mean and covariance
-        Sigma22_inv = np.linalg.inv(Sigma22)
-        updated_Sigma = Sigma11 - Sigma12 @ Sigma22_inv @ Sigma21
-
-        self.conditional_sigma = updated_Sigma
 
 
 
@@ -185,57 +194,66 @@ if region == 'Iowa':
 elif region == 'Kenya':
     yield_data_path = 'data/kenya_yield_data.csv'
     covariate_data_path = 'data/kenya_ndvi.csv'
-    max_samples = 776 #number of samples in Kenya's lowest-sample year
+    max_samples = 50 #number of samples in Kenya's lowest-sample year
 
 else:
     print('The region you listed has not been paramaterized yet.')
     sys.exit()
 
-# Load data and set region-agnostic parameters
+# Set region-agnostic parameters
+sample_selection = 'random' #Options: 'random', 'mic_greedy
+estimation_method = 'sample_mean' #Options: 'sample_mean', 'normal_inference'
+years_to_sample = list(np.arange(2019, 2023))
+n_reps = 100 # We only need n_reps > 0 when sample_selection == 'random'
+
+# Load data
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.yield_data = sampler.yield_data.dropna()
-sample_selection = 'mic_greedy'
-years_to_sample = list(np.arange(1980, 2023))
-n_reps = 1 # We only need n_reps > 0 when sample_selection == 'random'
 rmse_matrix = np.zeros((len(years_to_sample), max_samples))
 min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
+
 
 # Run simulation
 for year in years_to_sample:
     print('Sampling %d' % year)
-    sampler.initialize_covariance(covariate_data_path, year)
-    #cov_matrix_df = pd.DataFrame(sampler.covariance_matrix)
-    #cov_matrix_df.to_csv('data/covariance_matrix_2019.csv', index=False)
-    #sampler.set_yield_priors(year)
-    rep = 0
+    if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'): 
+        sampler.initialize_covariance(covariate_data_path, year)
+        inferred_mean = np.zeros((max_samples, n_reps))
+        #sampler.set_yield_priors(year) # Written for Kenya data
     true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
     sample_mean = np.zeros((max_samples, n_reps))
+    rep = 0
 
     while rep < n_reps:
+        if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'):
+            sampler.conditional_sigma = sampler.covariance_matrix
+            sampler.mu = np.zeros((max_samples, 1))
         if rep % 13 == 0: print('Rep number %d' % rep)
         stop = False
         n_samples = 0
-        samples = []
+        sample_vals = []
         sampler.conditional_sigma = sampler.covariance_matrix #reset conditional sigma matrix to prior covariance matrix before each sampling run
 
         while stop == False:
-            #Pull Sample
+            # Pull Sample
             if sample_selection == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
             elif sample_selection == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
+            sample_vals += [yield_val]
 
-            #Update Yield Estimates
+            # Stopping due to all samples being taken for given year
             if yield_val == None: #Stop sampling once all samples have been taken
                 stop = True
                 if n_samples < min_samples: min_samples = n_samples #tracks the lowest number of samples taken in a year
                 break
 
-            samples += [yield_val]
-            sample_mean[n_samples, rep] = np.mean(samples)
+            # Updating yield estimate
+            sample_mean[n_samples, rep] = np.mean(sample_vals)
+            if estimation_method == 'normal_inference':
+                sampler.update_mu_sigma(next_sample_idx, yield_val)
+                inferred_mean[n_samples, rep] = np.mean(sampler.conditional_mu, sample_vals)
 
-            #sampler.update_cov_matrix()
-
-            #Stopping
+            # Stopping due to max_samples being reached
             n_samples += 1
             if n_samples >= max_samples: stop = True
 
@@ -255,7 +273,7 @@ plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
 plt.title('RMSE vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
 plt.xlabel('Number of samples taken')
 if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
-else: plot.ylabel('RMSE in tons per hectare')
+else: plt.ylabel('RMSE in tons per hectare')
 plt.grid(True)
 plt.savefig('graphs/%s_maize_yield_rmse_%s_sampling' % (region, sample_selection))
 plt.show()
