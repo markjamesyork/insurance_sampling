@@ -74,7 +74,6 @@ class MaizeYieldSampler:
 
     def next_sample_mic_greedy(self, year):
         # Select the unsampled index which greedily maximizes mutual information
-
         filtered_df = self.yield_data[self.yield_data.year == year]
         filtered_df = filtered_df.reset_index(drop=True)
         all_indices = set(filtered_df.index)
@@ -166,10 +165,43 @@ class MaizeYieldSampler:
         observed_index (int): Index of the observed variable.
         observed_value (float): Value of the observed variable.
         """
+
+        '''
+        Copy and pasted context from above to pull from:
+         # Calculate the mutual information gain from selecting each remaining index and track the higehst one
+            Sigma_AA = self.covariance_matrix[np.ix_(sampled_indices, sampled_indices)]
+            Sigma_AA_inv = np.linalg.inv(Sigma_AA)
+            delta = -10**9
+            for index in remaining_indices:
+                # Create matrices needed to calculate mutual information
+                Sigma_Ay = self.covariance_matrix[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
+                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
+                Sigma_woAy = self.covariance_matrix[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
+                Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
+                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
+        '''
+
+        print('self.sampled_indices', self.sampled_indices)
+
+        # Gather indices to pull
+        filtered_df = self.yield_data[self.yield_data.year == year]
+        all_indices = set(filtered_df.index)
+        remaining_indices = sorted(list(all_indices - self.sampled_indices)) #sorts remaining indices by index
+        print('remaining_indices', remaining_indices)
+        sampled_indices = sorted(list(self.sampled_indices))
+        obs_index_in_remaining = remaining_indices.index(observed_index)
+
         # Extract relevant parts of the covariance matrix
-        sigma_ii = self.conditional_sigma[observed_index, observed_index]
+        sigma_ii = self.conditional_sigma[np.ix_([obs_index_in_remaining], [obs_index_in_remaining])]
+
+        sigma_oi = np.delete(self.conditional_sigma[:, np.ix_([observed_index], sampled_indices)], np.ix_([observed_index], sampled_indices), 0)
+        sigma_oo = np.delete(np.delete(self.conditional_sigma, np.ix_([observed_index], sampled_indices), 0), np.ix_([observed_index], sampled_indices), 1)
+
+        '''
+        Old version of above lines
         sigma_oi = np.delete(self.conditional_sigma[:, observed_index], observed_index, 0)
         sigma_oo = np.delete(np.delete(self.conditional_sigma, observed_index, 0), observed_index, 1)
+        '''
         
         # Compute the Schur complement to update the covariance matrix for unobserved variables
         self.conditional_sigma = sigma_oo - np.outer(sigma_oi, sigma_oi.T) / sigma_ii
@@ -202,7 +234,7 @@ else:
 
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
-estimation_method = 'sample_mean' #Options: 'sample_mean', 'normal_inference'
+estimation_method = 'normal_inference' #Options: 'sample_mean', 'normal_inference'
 years_to_sample = list(np.arange(2019, 2023))
 n_reps = 100 # We only need n_reps > 0 when sample_selection == 'random'
 
