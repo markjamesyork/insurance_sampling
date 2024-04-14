@@ -30,6 +30,7 @@ class MaizeYieldSampler:
         self.conditional_sigma = None
         self.sampled_indices = set()
         self.predictions = []
+        self.loss_threshold = .9
 
     def read_yield_data(self, file_path):
         self.yield_data = pd.read_csv(file_path)
@@ -178,7 +179,7 @@ class MaizeYieldSampler:
                 remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
                 Sigma_woAy = self.covariance_matrix[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
                 Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
-                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
+                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V / (A U y) and y
         '''
 
         print('self.sampled_indices', self.sampled_indices)
@@ -211,22 +212,36 @@ class MaizeYieldSampler:
         mu_o = np.delete(self.conditional_mu, observed_index, 0)
         self.conditional_mu = mu_o + (observed_value - mu_i) * (sigma_oi / sigma_ii)
 
+        return
+
+
+    def insurer_loss(self, sample_mean, true_yield_mean, expected_yield):
+        # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
+        guarantee = self.loss_threshold * expected_yield
+        actual_payout = guarantee - np.clip(sample_mean, 0, guarantee) # Amount the insurer pays the insuree
+        ideal_payout = np.clip(guarantee - true_yield_mean, 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
+        loss = np.abs(actual_payout - ideal_payout)
+
+        return loss.reshape(loss.shape[0]), actual_payout
+
 
 
 
 
 # Execution:
 # Set region-specific parameters
-region = 'Iowa'
+region = 'Kenya'
 if region == 'Iowa':
     yield_data_path = 'data/iowa_yield_data.csv'
     covariate_data_path = 'data/iowa_yield_detrended.csv'
-    max_samples = 99 #number of counties in Iowa
+    max_samples = 10 #number of counties in Iowa
+    trend_params = [-4292.5011, 2.21671781]
 
 elif region == 'Kenya':
     yield_data_path = 'data/kenya_yield_data.csv'
     covariate_data_path = 'data/kenya_ndvi.csv'
-    max_samples = 50 #number of samples in Kenya's lowest-sample year
+    max_samples = 10 #number of samples in Kenya's lowest-sample year
+    trend_params = [0., 0.]
 
 else:
     print('The region you listed has not been paramaterized yet.')
@@ -234,15 +249,16 @@ else:
 
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
-estimation_method = 'normal_inference' #Options: 'sample_mean', 'normal_inference'
-years_to_sample = list(np.arange(2019, 2023))
-n_reps = 100 # We only need n_reps > 0 when sample_selection == 'random'
+estimation_method = 'sample_mean' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
+years_to_sample = list(np.arange(2020, 2021))
+n_reps = 1 # We only need n_reps > 0 when sample_selection == 'random'
 
 # Load data
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.yield_data = sampler.yield_data.dropna()
 rmse_matrix = np.zeros((len(years_to_sample), max_samples))
+insurer_loss_matrix = rmse_matrix.copy()
 min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
 
 
@@ -254,6 +270,7 @@ for year in years_to_sample:
         inferred_mean = np.zeros((max_samples, n_reps))
         #sampler.set_yield_priors(year) # Written for Kenya data
     true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
+    expected_yield = sampler.yield_data[sampler.yield_data['year'] != year]['yield'].mean() #calculates expected yield as the mean of yield from all years other than target year
     sample_mean = np.zeros((max_samples, n_reps))
     rep = 0
 
@@ -293,9 +310,24 @@ for year in years_to_sample:
         rep += 1
 
     # Calc results
+
+    # RMSE
     squared_error = np.square(sample_mean - true_yield_mean)
     rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
     rmse_matrix[year - years_to_sample[0], :] = rmse
+
+    # Insurer Loss
+    trend_yield = trend_params[0] + trend_params[1] * year
+    insurer_loss, actual_payout = sampler.insurer_loss(sample_mean, true_yield_mean, expected_yield + trend_yield)
+    insurer_loss_matrix[year - years_to_sample[0], :] = insurer_loss
+    print('sample_mean', sample_mean)
+    print('true_yield_mean', true_yield_mean)
+    print('expected_yield', expected_yield)
+    print('guarantee', sampler.loss_threshold * expected_yield)
+    print('insurer_loss', insurer_loss)
+    print('actual_payout', actual_payout)
+    input()
+
 
 # Chart results
 rmse_chart_vector = np.mean(rmse_matrix[:,:min_samples], axis=0)
