@@ -30,7 +30,7 @@ class MaizeYieldSampler:
         self.conditional_sigma = None
         self.sampled_indices = set()
         self.predictions = []
-        self.loss_threshold = .9
+        self.loss_threshold = .95
 
     def read_yield_data(self, file_path):
         self.yield_data = pd.read_csv(file_path)
@@ -215,11 +215,11 @@ class MaizeYieldSampler:
         return
 
 
-    def insurer_loss(self, sample_mean, true_yield_mean, expected_yield):
+    def insurer_loss(self, sample_mean, true_yield_mean, expected_yield, trend_yield):
         # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
-        guarantee = self.loss_threshold * expected_yield
-        actual_payout = guarantee - np.clip(sample_mean, 0, guarantee) # Amount the insurer pays the insuree
-        ideal_payout = np.clip(guarantee - true_yield_mean, 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
+        guarantee = self.loss_threshold * (expected_yield + trend_yield)
+        actual_payout = guarantee - np.clip(sample_mean + trend_yield, 0, guarantee) # Amount the insurer pays the insuree
+        ideal_payout = np.clip(guarantee - (true_yield_mean + trend_yield), 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
         loss = np.abs(actual_payout - ideal_payout)
 
         return loss.reshape(loss.shape[0]), actual_payout
@@ -317,21 +317,13 @@ for year in years_to_sample:
     rmse_matrix[year - years_to_sample[0], :] = rmse
 
     # Insurer Loss
-    trend_yield = trend_params[0] + trend_params[1] * year
-    insurer_loss, actual_payout = sampler.insurer_loss(sample_mean, true_yield_mean, expected_yield + trend_yield)
+    trend_yield = trend_params[0] + trend_params[1] * year # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
+    insurer_loss, actual_payout = sampler.insurer_loss(sample_mean, true_yield_mean, expected_yield, trend_yield)
     insurer_loss_matrix[year - years_to_sample[0], :] = insurer_loss
-    print('sample_mean', sample_mean)
-    print('true_yield_mean', true_yield_mean)
-    print('expected_yield', expected_yield)
-    print('guarantee', sampler.loss_threshold * expected_yield)
-    print('insurer_loss', insurer_loss)
-    print('actual_payout', actual_payout)
-    input()
 
 
 # Chart results
 rmse_chart_vector = np.mean(rmse_matrix[:,:min_samples], axis=0)
-print(rmse_chart_vector, rmse_chart_vector.shape)
 plt.figure(figsize=(8, 6))
 plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
 plt.title('RMSE vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
