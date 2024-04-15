@@ -37,6 +37,7 @@ class MaizeYieldSampler:
 
     def initialize_covariance(self, file_path, year):
         # Calculate the covariance matrix for a given year before any samples are taken
+        # Note that the set of location IDs in the covariate data MUST BE EXACTLY THE SAME as the set of locations in the yield data
 
         # Read covariate data
         df = pd.read_csv(file_path)
@@ -166,22 +167,6 @@ class MaizeYieldSampler:
         observed_index (int): Index of the observed variable.
         observed_value (float): Value of the observed variable.
         """
-
-        '''
-        Copy and pasted context from above to pull from:
-         # Calculate the mutual information gain from selecting each remaining index and track the higehst one
-            Sigma_AA = self.covariance_matrix[np.ix_(sampled_indices, sampled_indices)]
-            Sigma_AA_inv = np.linalg.inv(Sigma_AA)
-            delta = -10**9
-            for index in remaining_indices:
-                # Create matrices needed to calculate mutual information
-                Sigma_Ay = self.covariance_matrix[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
-                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
-                Sigma_woAy = self.covariance_matrix[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
-                Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
-                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V / (A U y) and y
-        '''
-
         print('self.sampled_indices', self.sampled_indices)
 
         # Gather indices to pull
@@ -190,12 +175,17 @@ class MaizeYieldSampler:
         remaining_indices = sorted(list(all_indices - self.sampled_indices)) #sorts remaining indices by index
         print('remaining_indices', remaining_indices)
         sampled_indices = sorted(list(self.sampled_indices))
-        obs_index_in_remaining = remaining_indices.index(observed_index)
+
+        # Make lists of locations which can be sampled in target year and all locations
+        target_year_locations = sorted(filtered_df['location_id'].unique()) #Finds all unique locations in the target year and alphabetizes them
+        all_locations = sorted(self.yield_data['location_id'].unique())
+        remaining_locations = 
+        obs_index_in_remaining = list(all_indices).index(observed_index)
 
         # Extract relevant parts of the covariance matrix
         sigma_ii = self.conditional_sigma[np.ix_([obs_index_in_remaining], [obs_index_in_remaining])]
 
-        sigma_oi = np.delete(self.conditional_sigma[:, np.ix_([observed_index], sampled_indices)], np.ix_([observed_index], sampled_indices), 0)
+        sigma_oi =  np.delete(self.conditional_sigma[:, np.ix_([observed_index], sampled_indices)], np.ix_([observed_index], sampled_indices), 0)
         sigma_oo = np.delete(np.delete(self.conditional_sigma, np.ix_([observed_index], sampled_indices), 0), np.ix_([observed_index], sampled_indices), 1)
 
         '''
@@ -222,7 +212,7 @@ class MaizeYieldSampler:
         ideal_payout = np.clip(guarantee - (true_yield_mean + trend_yield), 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
         loss = np.abs(actual_payout - ideal_payout)
 
-        return loss.reshape(loss.shape[0]), actual_payout
+        return loss, actual_payout
 
 
 
@@ -230,7 +220,7 @@ class MaizeYieldSampler:
 
 # Execution:
 # Set region-specific parameters
-region = 'Kenya'
+region = 'Iowa'
 if region == 'Iowa':
     yield_data_path = 'data/iowa_yield_data.csv'
     covariate_data_path = 'data/iowa_yield_detrended.csv'
@@ -240,7 +230,7 @@ if region == 'Iowa':
 elif region == 'Kenya':
     yield_data_path = 'data/kenya_yield_data.csv'
     covariate_data_path = 'data/kenya_ndvi.csv'
-    max_samples = 10 #number of samples in Kenya's lowest-sample year
+    max_samples = 776 #number of samples in Kenya's lowest-sample year
     trend_params = [0., 0.]
 
 else:
@@ -249,9 +239,9 @@ else:
 
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
-estimation_method = 'sample_mean' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
-years_to_sample = list(np.arange(2020, 2021))
-n_reps = 1 # We only need n_reps > 0 when sample_selection == 'random'
+estimation_method = 'normal_inference' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
+years_to_sample = list(np.arange(2019, 2024))
+n_reps = 1 # We only need n_reps > 1 when sample_selection == 'random'
 
 # Load data
 sampler = MaizeYieldSampler()
@@ -277,6 +267,7 @@ for year in years_to_sample:
     while rep < n_reps:
         if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'):
             sampler.conditional_sigma = sampler.covariance_matrix
+            print('sampler.conditional_sigma', sampler.conditional_sigma)
             sampler.mu = np.zeros((max_samples, 1))
         if rep % 13 == 0: print('Rep number %d' % rep)
         stop = False
@@ -319,18 +310,20 @@ for year in years_to_sample:
     # Insurer Loss
     trend_yield = trend_params[0] + trend_params[1] * year # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
     insurer_loss, actual_payout = sampler.insurer_loss(sample_mean, true_yield_mean, expected_yield, trend_yield)
-    insurer_loss_matrix[year - years_to_sample[0], :] = insurer_loss
+    insurer_loss_means = np.mean(insurer_loss, axis=1)
+    insurer_loss_matrix[year - years_to_sample[0], :] = insurer_loss_means
 
 
 # Chart results
 rmse_chart_vector = np.mean(rmse_matrix[:,:min_samples], axis=0)
+insurer_loss_chart_vector = np.mean(insurer_loss_matrix[:,:min_samples], axis=0)
 plt.figure(figsize=(8, 6))
 plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
-plt.title('RMSE vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
+plt.title('Insurer Loss vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
 plt.xlabel('Number of samples taken')
 if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
-else: plt.ylabel('RMSE in tons per hectare')
+else: plt.ylabel('Insurer Loss in tons per hectare')
 plt.grid(True)
-plt.savefig('graphs/%s_maize_yield_rmse_%s_sampling' % (region, sample_selection))
+plt.savefig('graphs/%s_maize_yield_insurer_loss_%s_sampling' % (region, sample_selection))
 plt.show()
 
