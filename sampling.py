@@ -159,47 +159,37 @@ class MaizeYieldSampler:
 
         self.conditional_mu = prior_yields
 
-    def update_mu_sigma(self, observed_index, observed_value):
+    def update_mu_sigma(self, year, observed_index, observed_value):
         """
         Update the mean vector and covariance matrix after observing a new sample.
+        Assumes that self.covariance has the location_id sorted lexicographically
         
         Parameters:
+        year = target year for which we are sampling
         observed_index (int): Index of the observed variable.
         observed_value (float): Value of the observed variable.
         """
-        print('self.sampled_indices', self.sampled_indices)
 
-        # Gather indices to pull
+        # Filter yield data for this year only
         filtered_df = self.yield_data[self.yield_data.year == year]
-        all_indices = set(filtered_df.index)
-        remaining_indices = sorted(list(all_indices - self.sampled_indices)) #sorts remaining indices by index
-        print('remaining_indices', remaining_indices)
-        sampled_indices = sorted(list(self.sampled_indices))
 
-        # Make lists of locations which can be sampled in target year and all locations
-        target_year_locations = sorted(filtered_df['location_id'].unique()) #Finds all unique locations in the target year and alphabetizes them
-        all_locations = sorted(self.yield_data['location_id'].unique())
-        remaining_locations = 
-        obs_index_in_remaining = list(all_indices).index(observed_index)
+        # Find indices for sample to pull and for remaining samples within self.conditional_sigma 
+        all_indices = set(filtered_df.index)
+        remaining_indices = all_indices - (self.sampled_indices - {observed_index}) # Set contains current sample to evaluate
+        obs_index_in_remaining = list(remaining_indices).index(observed_index) # Index of the currently-observed index within all remaining unsampled indices
+        remaining_less_obs = list(remaining_indices - {observed_index})
 
         # Extract relevant parts of the covariance matrix
-        sigma_ii = self.conditional_sigma[np.ix_([obs_index_in_remaining], [obs_index_in_remaining])]
-
-        sigma_oi =  np.delete(self.conditional_sigma[:, np.ix_([observed_index], sampled_indices)], np.ix_([observed_index], sampled_indices), 0)
-        sigma_oo = np.delete(np.delete(self.conditional_sigma, np.ix_([observed_index], sampled_indices), 0), np.ix_([observed_index], sampled_indices), 1)
-
-        '''
-        Old version of above lines
-        sigma_oi = np.delete(self.conditional_sigma[:, observed_index], observed_index, 0)
-        sigma_oo = np.delete(np.delete(self.conditional_sigma, observed_index, 0), observed_index, 1)
-        '''
+        sigma_ii = self.conditional_sigma[obs_index_in_remaining, obs_index_in_remaining]
+        sigma_oi = np.delete(self.conditional_sigma[:, obs_index_in_remaining], obs_index_in_remaining, 0)
+        sigma_oo = np.delete(np.delete(self.conditional_sigma, obs_index_in_remaining, 0), obs_index_in_remaining, 1)
         
         # Compute the Schur complement to update the covariance matrix for unobserved variables
         self.conditional_sigma = sigma_oo - np.outer(sigma_oi, sigma_oi.T) / sigma_ii
         
         # Update the mean vector for unobserved variables
-        mu_i = self.conditional_mu[observed_index]
-        mu_o = np.delete(self.conditional_mu, observed_index, 0)
+        mu_i = self.conditional_mu[obs_index_in_remaining]
+        mu_o = np.delete(self.conditional_mu, obs_index_in_remaining, 0)
         self.conditional_mu = mu_o + (observed_value - mu_i) * (sigma_oi / sigma_ii)
 
         return
@@ -240,16 +230,20 @@ else:
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
 estimation_method = 'normal_inference' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
-years_to_sample = list(np.arange(2019, 2024))
+years_to_sample = list(np.arange(2019, 2023))
 n_reps = 1 # We only need n_reps > 1 when sample_selection == 'random'
+min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
 
 # Load data
 sampler = MaizeYieldSampler()
 sampler.read_yield_data(yield_data_path)
 sampler.yield_data = sampler.yield_data.dropna()
-rmse_matrix = np.zeros((len(years_to_sample), max_samples))
-insurer_loss_matrix = rmse_matrix.copy()
-min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
+
+# Create results matrices
+rmse_sample_mean_matrix = np.zeros((len(years_to_sample), max_samples))
+rmse_inference_matrix = rmse_sample_mean_matrix.copy()
+insurer_loss_sample_mean_matrix = rmse_sample_mean_matrix.copy()
+insurer_loss_inference_matrix = rmse_sample_mean_matrix.copy()
 
 
 # Run simulation
@@ -257,7 +251,8 @@ for year in years_to_sample:
     print('Sampling %d' % year)
     if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'): 
         sampler.initialize_covariance(covariate_data_path, year)
-        inferred_mean = np.zeros((max_samples, n_reps))
+        sampler.conditional_mu = np.zeros((sampler.covariance_matrix.shape[0],)) # Set conditional mean at zeros - works for detrended yield data as in Iowa
+        inference = np.zeros((max_samples, n_reps)) # Yield estimates from normal inference
         #sampler.set_yield_priors(year) # Written for Kenya data
     true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
     expected_yield = sampler.yield_data[sampler.yield_data['year'] != year]['yield'].mean() #calculates expected yield as the mean of yield from all years other than target year
@@ -267,7 +262,6 @@ for year in years_to_sample:
     while rep < n_reps:
         if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'):
             sampler.conditional_sigma = sampler.covariance_matrix
-            print('sampler.conditional_sigma', sampler.conditional_sigma)
             sampler.mu = np.zeros((max_samples, 1))
         if rep % 13 == 0: print('Rep number %d' % rep)
         stop = False
@@ -290,8 +284,8 @@ for year in years_to_sample:
             # Updating yield estimate
             sample_mean[n_samples, rep] = np.mean(sample_vals)
             if estimation_method == 'normal_inference':
-                sampler.update_mu_sigma(next_sample_idx, yield_val)
-                inferred_mean[n_samples, rep] = np.mean(sampler.conditional_mu, sample_vals)
+                sampler.update_mu_sigma(year, next_sample_idx, yield_val)
+                inference[n_samples, rep] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
 
             # Stopping due to max_samples being reached
             n_samples += 1
@@ -302,21 +296,37 @@ for year in years_to_sample:
 
     # Calc results
 
-    # RMSE
+    # RMSE Sample Mean
     squared_error = np.square(sample_mean - true_yield_mean)
     rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
-    rmse_matrix[year - years_to_sample[0], :] = rmse
+    rmse_sample_mean_matrix[year - years_to_sample[0], :] = rmse
 
-    # Insurer Loss
+    # Insurer Loss Sample Mean
     trend_yield = trend_params[0] + trend_params[1] * year # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
     insurer_loss, actual_payout = sampler.insurer_loss(sample_mean, true_yield_mean, expected_yield, trend_yield)
     insurer_loss_means = np.mean(insurer_loss, axis=1)
-    insurer_loss_matrix[year - years_to_sample[0], :] = insurer_loss_means
+    insurer_loss_sample_mean_matrix[year - years_to_sample[0], :] = insurer_loss_means
+
+    if estimation_method == 'normal_inference':    
+        # RMSE Infered Mean
+        squared_error = np.square(inference - true_yield_mean)
+        rmse = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
+        rmse_inference_matrix[year - years_to_sample[0], :] = rmse
+
+        # Insurer Loss Inferred Mean
+        trend_yield = trend_params[0] + trend_params[1] * year # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
+        insurer_loss, actual_payout = sampler.insurer_loss(inference, true_yield_mean, expected_yield, trend_yield)
+        insurer_loss_means = np.mean(insurer_loss, axis=1)
+        insurer_loss_inference_matrix[year - years_to_sample[0], :] = insurer_loss_means
+
 
 
 # Chart results
-rmse_chart_vector = np.mean(rmse_matrix[:,:min_samples], axis=0)
-insurer_loss_chart_vector = np.mean(insurer_loss_matrix[:,:min_samples], axis=0)
+rmse_sample_vector = np.mean(rmse_sample_mean_matrix[:,:min_samples], axis=0)
+rmse_inference_vector = np.mean(rmse_inference_matrix[:,:min_samples], axis=0)
+insurer_loss_sample_vector = np.mean(insurer_loss_sample_mean_matrix[:,:min_samples], axis=0)
+insurer_loss_inference_vector = np.mean(insurer_loss_inference_matrix[:,:min_samples], axis=0)
+
 plt.figure(figsize=(8, 6))
 plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
 plt.title('Insurer Loss vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
@@ -326,4 +336,3 @@ else: plt.ylabel('Insurer Loss in tons per hectare')
 plt.grid(True)
 plt.savefig('graphs/%s_maize_yield_insurer_loss_%s_sampling' % (region, sample_selection))
 plt.show()
-
