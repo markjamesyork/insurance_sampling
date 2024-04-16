@@ -175,7 +175,11 @@ class MaizeYieldSampler:
 
         # Find indices for sample to pull and for remaining samples within self.conditional_sigma 
         all_indices = set(filtered_df.index)
+        filtered_df.to_csv('data/filtered_df.csv')
         remaining_indices = all_indices - (self.sampled_indices - {observed_index}) # Set contains current sample to evaluate
+        #print('remaining_indices', remaining_indices)
+        #print('observed_index', observed_index)
+        #print('all_indices', all_indices)
         obs_index_in_remaining = list(remaining_indices).index(observed_index) # Index of the currently-observed index within all remaining unsampled indices
         remaining_less_obs = list(remaining_indices - {observed_index})
 
@@ -188,6 +192,14 @@ class MaizeYieldSampler:
         self.conditional_sigma = sigma_oo - np.outer(sigma_oi, sigma_oi.T) / sigma_ii
         
         # Update the mean vector for unobserved variables
+        '''
+        print('self.conditional_mu', self.conditional_mu)
+        print('obs_index_in_remaining', obs_index_in_remaining)
+        print('observed_index', observed_index)
+        print('remaining_indices', remaining_indices)
+        print('self.sampled_indices', self.sampled_indices)
+        print('all_indices', all_indices)
+        '''
         mu_i = self.conditional_mu[obs_index_in_remaining]
         mu_o = np.delete(self.conditional_mu, obs_index_in_remaining, 0)
         self.conditional_mu = mu_o + (observed_value - mu_i) * (sigma_oi / sigma_ii)
@@ -214,7 +226,7 @@ region = 'Iowa'
 if region == 'Iowa':
     yield_data_path = 'data/iowa_yield_data.csv'
     covariate_data_path = 'data/iowa_yield_detrended.csv'
-    max_samples = 10 #number of counties in Iowa
+    max_samples = 99 #number of counties in Iowa
     trend_params = [-4292.5011, 2.21671781]
 
 elif region == 'Kenya':
@@ -230,8 +242,8 @@ else:
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
 estimation_method = 'normal_inference' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
-years_to_sample = list(np.arange(2019, 2023))
-n_reps = 1 # We only need n_reps > 1 when sample_selection == 'random'
+years_to_sample = list(np.arange(1980, 2023))
+n_reps = 10 # We only need n_reps > 1 when sample_selection == 'random'
 min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
 
 # Load data
@@ -249,25 +261,29 @@ insurer_loss_inference_matrix = rmse_sample_mean_matrix.copy()
 # Run simulation
 for year in years_to_sample:
     print('Sampling %d' % year)
-    if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'): 
+    if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'):
         sampler.initialize_covariance(covariate_data_path, year)
-        sampler.conditional_mu = np.zeros((sampler.covariance_matrix.shape[0],)) # Set conditional mean at zeros - works for detrended yield data as in Iowa
         inference = np.zeros((max_samples, n_reps)) # Yield estimates from normal inference
         #sampler.set_yield_priors(year) # Written for Kenya data
-    true_yield_mean = sampler.yield_data[sampler.yield_data['year'] == year]['yield'].mean()
+    target_year_yields = sampler.yield_data[sampler.yield_data['year'] == year]['yield']
+    true_yield_mean = target_year_yields.mean()
     expected_yield = sampler.yield_data[sampler.yield_data['year'] != year]['yield'].mean() #calculates expected yield as the mean of yield from all years other than target year
     sample_mean = np.zeros((max_samples, n_reps))
     rep = 0
 
+    # Check that max_samples is not greater than the number of samples in target year
+    target_year_samples = len(target_year_yields)
+    if target_year_samples < min_samples: min_samples = target_year_samples
+
     while rep < n_reps:
+        # Reset conditional sigma and mu before each sampling run
         if (sample_selection == 'mic_greedy' or estimation_method == 'normal_inference'):
-            sampler.conditional_sigma = sampler.covariance_matrix
-            sampler.mu = np.zeros((max_samples, 1))
+            sampler.conditional_sigma = sampler.covariance_matrix 
+            sampler.conditional_mu = np.zeros((sampler.covariance_matrix.shape[0],)) # Set conditional mean at zeros - works for detrended yield data as in Iowa
         if rep % 13 == 0: print('Rep number %d' % rep)
         stop = False
         n_samples = 0
         sample_vals = []
-        sampler.conditional_sigma = sampler.covariance_matrix #reset conditional sigma matrix to prior covariance matrix before each sampling run
 
         while stop == False:
             # Pull Sample
@@ -275,11 +291,13 @@ for year in years_to_sample:
             elif sample_selection == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
             sample_vals += [yield_val]
 
+            '''
             # Stopping due to all samples being taken for given year
             if yield_val == None: #Stop sampling once all samples have been taken
                 stop = True
                 if n_samples < min_samples: min_samples = n_samples #tracks the lowest number of samples taken in a year
                 break
+            '''
 
             # Updating yield estimate
             sample_mean[n_samples, rep] = np.mean(sample_vals)
@@ -289,7 +307,7 @@ for year in years_to_sample:
 
             # Stopping due to max_samples being reached
             n_samples += 1
-            if n_samples >= max_samples: stop = True
+            if n_samples >= min(target_year_samples, max_samples): stop = True
 
         sampler.sampled_indices = set() #reset to no samples taken
         rep += 1
@@ -327,12 +345,29 @@ rmse_inference_vector = np.mean(rmse_inference_matrix[:,:min_samples], axis=0)
 insurer_loss_sample_vector = np.mean(insurer_loss_sample_mean_matrix[:,:min_samples], axis=0)
 insurer_loss_inference_vector = np.mean(insurer_loss_inference_matrix[:,:min_samples], axis=0)
 
+# Number of samples taken
+samples = np.arange(1, min_samples + 1)
+
+# Plotting RMSE Comparison
 plt.figure(figsize=(8, 6))
-plt.plot(rmse_chart_vector, marker='o', linestyle='-', color='b')
-plt.title('Insurer Loss vs No. of Samples - %s Maize with %s sampling' % (region, sample_selection))
+plt.plot(samples, rmse_sample_vector, marker='o', linestyle='-', color='b', label='Sample RMSE')
+plt.plot(samples, rmse_inference_vector, marker='o', linestyle='-', color='r', label='Inference RMSE')
+plt.title('Comparison of RMSE: Sample vs Inference - %s Maize with %s sampling' % (region, sample_selection))
 plt.xlabel('Number of samples taken')
-if region == 'Iowa': plt.ylabel('RMSE in bushels per acre')
-else: plt.ylabel('Insurer Loss in tons per hectare')
+plt.ylabel('RMSE in bushels per acre' if region == 'Iowa' else 'RMSE in tons per hectare')
 plt.grid(True)
-plt.savefig('graphs/%s_maize_yield_insurer_loss_%s_sampling' % (region, sample_selection))
+plt.legend()
+plt.savefig('graphs/%s_maize_rmse_comparison_%s_sampling.png' % (region, sample_selection))
+plt.show()
+
+# Plotting Insurer Loss Comparison
+plt.figure(figsize=(8, 6))
+plt.plot(samples, insurer_loss_sample_vector, marker='o', linestyle='-', color='b', label='Sample Insurer Loss')
+plt.plot(samples, insurer_loss_inference_vector, marker='o', linestyle='-', color='r', label='Inference Insurer Loss')
+plt.title('Comparison of Insurer Loss: Sample vs Inference - %s Maize' % (region))
+plt.xlabel('Number of samples taken')
+plt.ylabel('Insurer Loss in bushels per acre' if region == 'Iowa' else 'Insurer Loss in tons per hectare')
+plt.grid(True)
+plt.legend()
+plt.savefig('graphs/%s_maize_insurer_loss_comparison.png' % (region))
 plt.show()
