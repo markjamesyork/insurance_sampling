@@ -1,16 +1,6 @@
 #This script reads covariance and yield data, implements a sampling strategy, and stores the results.
 
-'''Sampling Steps:
-1. Read yield and (if necessary) covariate data
-2. For each year in target years:
-	2.1 Create covariance matrix
-	2.2 Determine which sample to take next
-	2.3 Sample, update yield estimates and covariance matrix
-	2.4 Determine whether stopping criteria have been met
-	2.5 Repeat steps 2.2 - 2.4 until stopping
-3. Create charts and any analysis; save
-'''
-
+from christofides import*
 import cvxpy as cp
 from calc_yield_prior import haversine #another script in this project
 import numpy as np
@@ -31,6 +21,8 @@ class MaizeYieldSampler:
         self.sampled_indices = set()
         self.predictions = []
         self.loss_threshold = .95
+        self.cost_per_sample_measurement = 10
+        self.cost_per_km_traveled = 10
 
     def read_yield_data(self, file_path):
         self.yield_data = pd.read_csv(file_path)
@@ -216,18 +208,22 @@ class MaizeYieldSampler:
 
         return loss, actual_payout
 
+    def insurer_cost(self):
+        # This function calculates the insurer's full cost, including their loss, sample measurement and travel costs
+        return
 
 
 
 
-# Execution:
+
+# EXECUTION:
 # Set region-specific parameters
 region = 'Iowa'
 if region == 'Iowa':
     yield_data_path = 'data/iowa_yield_data.csv'
     covariate_data_path = 'data/iowa_yield_detrended.csv'
     max_samples = 99 #number of counties in Iowa
-    trend_params = [-4292.5011, 2.21671781]
+    trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss
 
 elif region == 'Kenya':
     yield_data_path = 'data/kenya_yield_data.csv'
@@ -241,9 +237,9 @@ else:
 
 # Set region-agnostic parameters
 sample_selection = 'random' #Options: 'random', 'mic_greedy
-estimation_method = 'normal_inference' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
+estimation_method = 'sample_mean' #'normal_inference' #Options: 'sample_mean', 'normal_inference'
 years_to_sample = list(np.arange(1980, 2023))
-n_reps = 10 # We only need n_reps > 1 when sample_selection == 'random'
+n_reps = 100 # We only need n_reps > 1 when sample_selection == 'random'
 min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
 
 # Load data
@@ -347,6 +343,16 @@ insurer_loss_inference_vector = np.mean(insurer_loss_inference_matrix[:,:min_sam
 
 # Number of samples taken
 samples = np.arange(1, min_samples + 1)
+
+# Plotting RMSE Alone
+plt.figure(figsize=(8, 6))
+plt.plot(samples, rmse_sample_vector, marker='o', linestyle='-', color='b', label='Random Samploing RMSE')
+plt.title('RMSE - %s Maize with %s sampling' % (region, sample_selection))
+plt.xlabel('Number of samples taken')
+plt.ylabel('RMSE in bushels per acre' if region == 'Iowa' else 'RMSE in tons per hectare')
+plt.grid(True)
+plt.savefig('graphs/%s_maize_rmse_%s_sampling.png' % (region, sample_selection))
+plt.show()
 
 # Plotting RMSE Comparison
 plt.figure(figsize=(8, 6))
