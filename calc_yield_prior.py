@@ -22,6 +22,7 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
     rmse_results = {max_dist: [] for max_dist in max_dists}
 
     for target_year in target_years:
+        print('target_year', target_year)
         target_data = yield_data[yield_data['year'] == target_year]
         other_years_data = yield_data[yield_data['year'] != target_year]
 
@@ -33,7 +34,7 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
             for dists in dist_matrix:
                 # Filter points within max_dist and calculate average yield
-                close_points_yields = other_years_data['yield'].values[(dists <= max_dist)]
+                close_points_yields = other_years_data['yield'].values[(dists <= max_dist) & (dists > 0)]
                 predicted_yield = close_points_yields.mean() if len(close_points_yields) > 0 else np.nan
                 predictions.append(predicted_yield)
 
@@ -52,7 +53,7 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
     plt.xlabel('Year')
     plt.ylabel('RMSE')
-    plt.title('RMSE by Year for Different Max Distances')
+    plt.title('Other Year RMSE by Year for Different Max Distances')
     plt.legend()
     plt.grid(True)
     plt.xticks(target_years)
@@ -77,18 +78,18 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
     plt.xlabel('Maximum Distance (km)')
     plt.ylabel('Average RMSE')
-    plt.title('Average RMSE vs Maximum Distance')
+    plt.title('Average Other Year RMSE vs Maximum Distance')
     plt.grid(True)
 
     # Save the chart
-    plt.savefig('graphs/    yield_rmse_vs_distance.png')
+    plt.savefig('graphs/other_year_yield_rmse_vs_distance.png')
 
     return rmse_results
 
-'''
+
 # Execution:
 yield_data = pd.read_csv('data/kenya_yield_data.csv')  # Update with your actual file path
 target_years = [2019, 2020, 2021, 2022, 2023]
-max_dists = [5, 10, 25, 50, 100, 150, 250, 500]  # Distances in kilometers
+max_dists = [10, 25, 50, 100, 150, 250, 500]  # Distances in kilometers
 rmse_results = calculate_rmse_for_distances(yield_data, target_years, max_dists)
-'''
+
