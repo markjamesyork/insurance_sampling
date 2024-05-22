@@ -1,4 +1,4 @@
-#This script reads covariance and yield data, implements a sampling strategy, and stores the results.
+    #This script reads covariance and yield data, implements a sampling strategy, and stores the results.
 
 from christofides import*
 import cvxpy as cp
@@ -216,11 +216,10 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
         print('Region %s is not yet programmed in.' % region)
         sys.exit()
 
-    # Set intermediate variables to be modified during the simulation
+    # Set intermediateinf variables to be modified during the simulation
     if sampling_method != 'random': n_reps = 1 # Only have more than one rep for non-deterministic sampling methods
     min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
-    #sample_mean = np.zeros((max_samples, n_reps))
-    inference = np.zeros((max_samples, n_reps, len(years_to_sample)))
+    inferred_yield = np.zeros((max_samples, n_reps, len(years_to_sample)))
     sample_mean = np.zeros((max_samples, n_reps, len(years_to_sample)))
     true_yield_vector = []
 
@@ -269,7 +268,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                 sample_mean[n_samples, rep, year-years_to_sample[0]] = np.mean(sample_vals)
                 if inference_method == 'normal_inference':
                     sampler.update_mu_sigma(year, next_sample_idx, yield_val)
-                    inference[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
+                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
 
                 # Stopping due to max_samples being reached
                 n_samples += 1
@@ -280,10 +279,10 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
 
     # Return predicted yield results
     if inference_method == 'sample_mean':
-        return sample_mean, true_yield_vector, min_samples, expected_yield
+        return sample_mean, None, true_yield_vector, min_samples, expected_yield
 
     elif inference_method == 'normal_inference':
-        return sample_mean, inference, true_yield_vector, min_samples, expected_yield
+        return sample_mean, inferred_yield, true_yield_vector, min_samples, expected_yield
 
 
 def insurer_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
@@ -299,20 +298,21 @@ def insurer_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
 # EXECUTION:
 
 # 0 Simulation Settings
-region = 'Kenya'
-trend_params = [0,0] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
-sampling_methods = ['random', 'mic_greedy']  # Options: 'random', 'mic_greedy'
-inference_methods = ['sample_mean'] # Options: 'sample_mean', 'normal_inference'
-n_reps = 100
+region = 'Iowa'
+sampling_methods = ['random'] # Options: 'random', 'mic_greedy'
+inference_methods = ['normal_inference'] # Options: 'sample_mean', 'normal_inference'
+n_reps = 1
 loss_type = 'insurer_loss' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
-years_to_sample = np.arange(2019, 2024)
+years_to_sample = np.arange(2019, 2020)
 inferred_yield_dict = {}
 loss_dict = {}
+if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
+else: trend_params = [0, 0]
 
 # 1 Simulation Loop
 for sampling_method in sampling_methods:
     for inference_method in inference_methods:
-        inferred_yield_dict[sampling_method + '_' + inference_method], true_yield, min_samples, expected_yield = \
+        inferred_yield_dict[sampling_method + '_' + inference_method], inferred_yield, true_yield, min_samples, expected_yield = \
                     simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
 # 2 Loss Calculation
 for sampling_inference in inferred_yield_dict.keys():
