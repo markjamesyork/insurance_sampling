@@ -33,10 +33,12 @@ class MaizeYieldSampler:
         # Read covariate data
         df = pd.read_csv(file_path)
 
-        # Filter data to remove nans and data from target year
+        # Filter data to remove nans and data from target year and later
         if 'yield_data_year' in df.columns: df = df[df['yield_data_year'] == year] #Case where most locations only have data for one year
         df = df.dropna(subset=[str(year)]) #Remove rows which have no covariate data in the target year
-        df = df.drop(str(year), axis=1) #Drop data from the target year
+        for future_year in range(year, 2040):
+            if str(year) in df.columns:
+                df = df.drop(str(year), axis=1) #Drop data from the target year
         reduced_df = df.iloc[:, 2:].to_numpy().T
 
         # Standardize the data
@@ -228,10 +230,11 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     sampler.read_yield_data(yield_data_path)
     sampler.yield_data = sampler.yield_data.dropna()
 
-    # Calculate expected yield based on yield data from all years except target year:
+    # Calculate expected yield based on yield data from all years before target year:
     expected_yield = []
     for year in years_to_sample:
-        expected_yield += [np.mean(sampler.yield_data[sampler.yield_data['year'] != year]['yield'])]
+        if 'region' == 'Kenya' and year == 2019: expected_yield += [1.7005133] # 2019 trendline Kenyan maize yield based on 2009-2018 FAOSTAT data. The 2009-2018 mean was 1.62366. This is needed because there is no yield data before 2019.
+        else: expected_yield += [np.mean(sampler.yield_data[sampler.yield_data['year'] < year]['yield'])]
     print('expected_yield', expected_yield)
 
     # Run simulation
