@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 
 #0 Parameter setting
-n_years = 10000
-n_counties = 99
+n_years = 3
+n_counties = 5
 
 #1 Create random covariance matrix (symmetric, positive semi-definite)
 cov = np.random.random((n_counties, n_counties))*-1
@@ -37,15 +37,17 @@ x = np.random.multivariate_normal(np.zeros((n_counties)), cov, size=n_years)
 
 #3 Save results to .csv files
 
-# Save true covariance matrix used to generate synthetic yield data
+# Add filler column and save true covariance matrix used to generate synthetic yield data
 cov_df = pd.DataFrame(cov)
+cov_df['filler_column'] = np.nan
+filler_column = cov_df.pop('filler_column')
+cov_df.insert(0, 'filler_column', filler_column)
 cov_df.to_csv('data/synthetic_cov.csv')
 
-# Add filler column and save synthetic yield data
+# Convert yield data to column and save
 x_df = pd.DataFrame(x.T)
-x_df['filler_column'] = np.nan
-filler_column = x_df.pop('filler_column')
-x_df.insert(0, 'filler_column', filler_column)
+x_df.to_csv('data/original_format_synthetic_yield_data.csv')
+x_df = pd.melt(x_df, var_name = 'year', value_name='yield', ignore_index=False)
 x_df.to_csv('data/synthetic_yield_data.csv')
 
 # Save sample covariance matrix
