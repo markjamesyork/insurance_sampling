@@ -5,7 +5,7 @@ import pandas as pd
 
 #0 Parameter setting
 n_years = 10000
-n_counties = 10
+n_counties = 99
 
 #1 Create random covariance matrix (symmetric, positive semi-definite)
 cov = np.random.random((n_counties, n_counties))*-1
@@ -49,7 +49,8 @@ x_df.insert(0, 'filler_column', filler_column)
 x_df.to_csv('data/synthetic_yield_data.csv')
 
 # Save sample covariance matrix
-sample_cov = x_df.cov()
+tmp_df = pd.DataFrame(x)
+sample_cov = tmp_df.cov()
 sample_cov.to_csv('data/sample_cov.csv')
 
 
