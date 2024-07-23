@@ -1,6 +1,7 @@
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+import matplotlib.pyplot as plt
 from shapely.geometry import Point, box
 
 def create_grid(lat_min, lon_min, lat_max, lon_max, size_km):
@@ -12,9 +13,7 @@ def create_grid(lat_min, lon_min, lat_max, lon_max, size_km):
     grid_id = 0
     for lat in np.arange(lat_min, lat_max, lat_step):
         for lon in np.arange(lon_min, lon_max, lon_step):
-            # Define each grid square using `box`
             b = box(lon, lat, lon + lon_step, lat + lat_step)
-            # Calculate the centroid of each box
             centroid = b.centroid
             grid.append({
                 'grid_id': grid_id,
@@ -24,11 +23,11 @@ def create_grid(lat_min, lon_min, lat_max, lon_max, size_km):
             })
             grid_id += 1
     
-    # Creating a GeoDataFrame from the list of boxes
     grid_gdf = gpd.GeoDataFrame(grid)
     return grid_gdf
 
-def process_yield_data(file_path, grid_size):
+def process_yield_data(file_path, grid_size, shapefile_path):
+	# Shapefile Source: https://www.naturalearthdata.com/downloads/
     df = pd.read_csv(file_path)
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude))
 
@@ -37,13 +36,28 @@ def process_yield_data(file_path, grid_size):
 
     grid = create_grid(lat_min, lon_min, lat_max, lon_max, grid_size)
 
+    # Load the shapefile for world map and filter for Kenya
+    world = gpd.read_file(shapefile_path)
+    print('world.columns: ', world.columns)  # Print the column names to find the correct one
+
+    kenya = world[world.NAME == "Kenya"]
+
+    # Plotting
+    fig, ax = plt.subplots(figsize=(10, 15))
+    kenya.plot(ax=ax, color='white', edgecolor='black')
+    grid.plot(ax=ax, alpha=0.5, edgecolor='k', cmap='hot', legend=True)  # Random heatmap colors
+
+    plt.title('Grid Overlay on Map of Kenya')
+    plt.axis('equal')
+    plt.savefig('Kenya_with_grids.png')
+    plt.show()
+
     # Save grid data to CSV
     grid[['grid_id', 'centroid_lat', 'centroid_lon']].to_csv('grid_centroids.csv', index=False)
 
     return grid
 
-# Usage example assuming the data file is located at 'data/kenya_yield_data.csv' and grid size is 500 km
-stats = process_yield_data('data/kenya_yield_data.csv', 100)
+# Example usage assuming the data file and shapefile paths
+shapefile_path = 'maps/ne_10m_admin_0_countries'
+stats = process_yield_data('data/kenya_yield_data.csv', 100, shapefile_path)
 print(stats)
-
-
