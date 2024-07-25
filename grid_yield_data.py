@@ -38,6 +38,9 @@ def process_yield_data(file_path, grid_size):
     yield_by_grid = gdf.groupby('grid_id').agg({'yield': 'mean'}).rename(columns={'yield': 'average_yield'})
     grid = grid.merge(yield_by_grid, on='grid_id', how='left')
 
+    # Filter out grids with no yield data
+    grid = grid.dropna(subset=['average_yield'])
+
     # Load the shapefile for the world map and filter for Kenya, then load additional layers
     world = gpd.read_file('maps/ne_10m_admin_0_countries') # Shapefile Source: https://www.naturalearthdata.com/downloads/	
     kenya = world[world.NAME == "Kenya"]
@@ -47,7 +50,7 @@ def process_yield_data(file_path, grid_size):
     # Load cities and filter for large cities within Kenya
     cities = gpd.read_file('maps/ne_10m_populated_places')
     cities['POP_MAX'] = pd.to_numeric(cities['POP_MAX'], errors='coerce')
-    large_cities = cities[cities['POP_MAX'] > 250000]  # Adjust the population threshold as needed
+    large_cities = cities[cities['POP_MAX'] > 100000]  # Adjust the population threshold as needed
     large_cities_in_kenya = gpd.sjoin(large_cities, kenya, how='inner', predicate='intersects')
     print('cities.columns', large_cities_in_kenya.columns)  # This will print out all column names in the dataset
 
@@ -78,5 +81,5 @@ def process_yield_data(file_path, grid_size):
     return grid
 
 # Example usage assuming the data file and shapefile paths
-stats = process_yield_data('data/kenya_yield_data.csv', 25)
+stats = process_yield_data('data/kenya_yield_data.csv', 10)
 print(stats)
