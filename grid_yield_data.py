@@ -3,6 +3,7 @@ import geopandas as gpd
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Point, box
+import matplotlib.colors as colors
 
 def create_grid(lat_min, lon_min, lat_max, lon_max, size_km):
     R = 6371  # Earth's radius in kilometers
@@ -14,20 +15,16 @@ def create_grid(lat_min, lon_min, lat_max, lon_max, size_km):
     for lat in np.arange(lat_min, lat_max, lat_step):
         for lon in np.arange(lon_min, lon_max, lon_step):
             b = box(lon, lat, lon + lon_step, lat + lat_step)
-            centroid = b.centroid
             grid.append({
                 'grid_id': grid_id,
-                'geometry': b,
-                'centroid_lat': centroid.y,
-                'centroid_lon': centroid.x
+                'geometry': b
             })
             grid_id += 1
     
     grid_gdf = gpd.GeoDataFrame(grid)
     return grid_gdf
 
-def process_yield_data(file_path, grid_size, shapefile_path):
-	# Shapefile Source: https://www.naturalearthdata.com/downloads/
+def process_yield_data(file_path, grid_size):
     df = pd.read_csv(file_path)
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.longitude, df.latitude))
 
@@ -35,29 +32,51 @@ def process_yield_data(file_path, grid_size, shapefile_path):
     lon_min, lon_max = gdf.geometry.x.min(), gdf.geometry.x.max()
 
     grid = create_grid(lat_min, lon_min, lat_max, lon_max, grid_size)
+    gdf = gpd.sjoin(gdf, grid, how='left', predicate='within')
 
-    # Load the shapefile for world map and filter for Kenya
-    world = gpd.read_file(shapefile_path)
-    print('world.columns: ', world.columns)  # Print the column names to find the correct one
+    # Calculate the average yield for each grid square
+    yield_by_grid = gdf.groupby('grid_id').agg({'yield': 'mean'}).rename(columns={'yield': 'average_yield'})
+    grid = grid.merge(yield_by_grid, on='grid_id', how='left')
 
+    # Load the shapefile for the world map and filter for Kenya, then load additional layers
+    world = gpd.read_file('maps/ne_10m_admin_0_countries') # Shapefile Source: https://www.naturalearthdata.com/downloads/	
     kenya = world[world.NAME == "Kenya"]
+    lakes = gpd.read_file('maps/ne_10m_lakes')
+    rivers = gpd.read_file('maps/ne_10m_rivers_lake_centerlines')
+
+    # Load cities and filter for large cities within Kenya
+    cities = gpd.read_file('maps/ne_10m_populated_places')
+    cities['POP_MAX'] = pd.to_numeric(cities['POP_MAX'], errors='coerce')
+    large_cities = cities[cities['POP_MAX'] > 250000]  # Adjust the population threshold as needed
+    large_cities_in_kenya = gpd.sjoin(large_cities, kenya, how='inner', predicate='intersects')
+    print('cities.columns', large_cities_in_kenya.columns)  # This will print out all column names in the dataset
+
+	# Perform spatial join to filter lakes and rivers within Kenya
+    lakes_in_kenya = gpd.sjoin(lakes, kenya, how='inner', predicate='intersects')
+    rivers_in_kenya = gpd.sjoin(rivers, kenya, how='inner', predicate='intersects')
+
 
     # Plotting
     fig, ax = plt.subplots(figsize=(10, 15))
     kenya.plot(ax=ax, color='white', edgecolor='black')
-    grid.plot(ax=ax, alpha=0.5, edgecolor='k', cmap='hot', legend=True)  # Random heatmap colors
+    lakes_in_kenya.plot(ax=ax, color='blue')  # Plot lakes in blue
+    rivers_in_kenya.plot(ax=ax, color='blue')  # Plot rivers in blue
+    large_cities_in_kenya.plot(ax=ax, marker='o', color='black', markersize=5)  # Plot large cities
+    grid.plot(column='average_yield', ax=ax, cmap='RdYlGn', legend=True, 
+              legend_kwds={'label': "Average Yield"},
+              edgecolor='k', missing_kwds={'color': 'lightgrey'})
 
-    plt.title('Grid Overlay on Map of Kenya')
+    # Annotate city names
+    for x, y, label in zip(large_cities_in_kenya.geometry.x, large_cities_in_kenya.geometry.y, large_cities_in_kenya['NAME_left']):
+        ax.text(x, y, label, fontsize=9, ha='right', va='top')
+
+    plt.title('Kenya Mean Yield by %d x %d Grid Cell' % (grid_size, grid_size))
     plt.axis('equal')
     plt.savefig('Kenya_with_grids.png')
     plt.show()
 
-    # Save grid data to CSV
-    grid[['grid_id', 'centroid_lat', 'centroid_lon']].to_csv('grid_centroids.csv', index=False)
-
     return grid
 
 # Example usage assuming the data file and shapefile paths
-shapefile_path = 'maps/ne_10m_admin_0_countries'
-stats = process_yield_data('data/kenya_yield_data.csv', 100, shapefile_path)
+stats = process_yield_data('data/kenya_yield_data.csv', 25)
 print(stats)
