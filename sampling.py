@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from sklearn.gaussian_process import GaussianProcessRegressor
 import sys
 
 
@@ -51,6 +53,7 @@ class MaizeYieldSampler:
 
         # Use Higham approximation to find the closest valid PSD covariance matrix to the raw covariance matrix
         self.covariance_matrix = self.higham_approximation(raw_covariance_matrix)
+        #self.covariance_matrix = pd.read_csv('data/cov_tmp.csv').to_numpy()
 
     def next_sample_random(self, year):
         # Randomly select an unsampled index
@@ -120,6 +123,21 @@ class MaizeYieldSampler:
             return mean_squared_error(actual, predicted, squared=False)
         else:
             return None
+
+    def insurer_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
+        # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
+        loss_threshold = .95
+        guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
+        actual_payout = guarantee - np.clip(inferred_yield + trend_yield, 0, guarantee) # Amount the insurer pays the insuree
+        ideal_payout = np.clip(guarantee - (true_yield_mean + trend_yield), 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
+        loss = np.abs(actual_payout - ideal_payout)
+
+        return loss, actual_payout
+
+    def full_insurer_utility(samples, per_sample_measurement_cost, per_km_travel_cost):
+        # This function calculates the full insurer utility, including estimation error loss, sample measurement cost and travel cost.
+
+        return len(samples) * per_sample_measurement_cost
 
     def higham_approximation(self, A):
         # Finds the nearest positive semidefinite matrix to A using CVXPY.
@@ -199,6 +217,50 @@ class MaizeYieldSampler:
         return
 
 
+def GP_inference(year):
+    # Fit a Gaussian Process and infer the yields of unmeasured samples
+
+    # Find indices of what has been sampled and what has not
+    filtered_df = self.yield_data[self.yield_data.year == year]
+    all_indices = set(filtered_df.index)
+    remaining_indices = list(all_indices - self.sampled_indices)
+
+    # Slice data according to what has beene sampled
+    df_sampled = filtered_df.iloc[self.sampled_indices]  # DataFrame of measured samples
+    df_unsampled = df.drop(sampled_indices)  # DataFrame of unmeasured samples
+
+    print('df_sampled',df_sampled)
+    print('df_unsampled',df_unsampled)
+
+
+    # Fit GP
+    gp = fit_GP(measured_samples)
+
+    # Calculate predicted yields
+    X_unsampled = df_unsampled[['latitude', 'longitude']].values
+    y_pred = gp.predict(X_unsampled, return_std=False)
+
+    print('X_unsampled', X_unsampled)
+    print('y_pred', y_pred)
+
+    return np.mean(np.hstack((y_pred, df_sampled['yield'].values)))
+
+
+def fit_GP(df_sampled):
+    # Fit a Gaussian Process to a set of measured samples
+
+    # Prepare the data: Extract coordinates and yields
+    X = df_sampled[['latitude', 'longitude']].values
+    y = df_sampled['yield'].values
+
+    # Kernel with RBF and adjustable constant
+    kernel = C(1.0, (1e-4, 1e1)) * RBF([1, 1], (1e-4, 1e2))
+
+    # Create Gaussian Process model
+    gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, alpha=1e-2, normalize_y=True)
+
+    return gp.fit(X, y) # Returns fit Gaussian Process
+
 
 def simulate(region, sampling_method, inference_method, n_reps, years_to_sample):
     # This function calls the MaizeYieldSampler class for various settings of sampling and inference methods
@@ -212,13 +274,18 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     elif region == 'Kenya':
         yield_data_path = 'data/kenya_yield_data.csv'
         covariate_data_path = 'data/kenya_ndvi.csv'
-        max_samples = 776 #number of samples in Kenya's lowest-sample year
+        max_samples = 10 #number of samples in Kenya's lowest-sample year
+
+    elif region == 'Synthetic':
+        yield_data_path = 'data/synthetic_yield_data_column.csv'
+        covariate_data_path = 'data/synthetic_yield_data_matrix.csv'
+        max_samples = 100
 
     else:
         print('Region %s is not yet programmed in.' % region)
         sys.exit()
 
-    # Set intermediateinf variables to be modified during the simulation
+    # Set intermediate variables to be modified during the simulation
     if sampling_method != 'random': n_reps = 1 # Only have more than one rep for non-deterministic sampling methods
     min_samples = max_samples #tracks the number of samples taken in the lowest-sample year
     inferred_yield = np.zeros((max_samples, n_reps, len(years_to_sample)))
@@ -251,6 +318,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
         target_year_samples = len(target_year_yields)
         if target_year_samples < min_samples: min_samples = target_year_samples
 
+        # Main repetitive sampling loop
         while rep < n_reps:
             # Reset conditional sigma and mu before each sampling run
             if (sampling_method == 'mic_greedy' or inference_method == 'normal_inference'):
@@ -266,12 +334,16 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                 if sampling_method == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
                 elif sampling_method == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
                 sample_vals += [yield_val]
+                print('sample_vals', sample_vals[-1])
 
                 # Updating yield estimate
                 sample_mean[n_samples, rep, year-years_to_sample[0]] = np.mean(sample_vals)
                 if inference_method == 'normal_inference':
                     sampler.update_mu_sigma(year, next_sample_idx, yield_val)
                     inferred_yield[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
+                elif inference_method == 'GP_inference':
+                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = GP_inference(year)
+                print('inferred_yield', inferred_yield[0][0][0])
 
                 # Stopping due to max_samples being reached
                 n_samples += 1
@@ -284,29 +356,49 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     if inference_method == 'sample_mean':
         return sample_mean, None, true_yield_vector, min_samples, expected_yield
 
-    elif inference_method == 'normal_inference':
-        return sample_mean, inferred_yield, true_yield_vector, min_samples, expected_yield
+    elif inference_method in {'normal_inference', 'GP_inference'}:
+        return inferred_yield, sample_mean, true_yield_vector, min_samples, expected_yield
 
 
-def insurer_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
-    # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
-    loss_threshold = .95
-    guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
-    actual_payout = guarantee - np.clip(inferred_yield + trend_yield, 0, guarantee) # Amount the insurer pays the insuree
-    ideal_payout = np.clip(guarantee - (true_yield_mean + trend_yield), 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
-    loss = np.abs(actual_payout - ideal_payout)
 
-    return loss, actual_payout
+
+
+def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Line Graph', var_1_label='Variable X', var_2_label='Variable Y'):
+    """
+    Plots a line graph for two variables passed as numpy arrays.
+
+    Parameters:
+    
+    x (numpy array): Data for the x-axis.
+    y (numpy array): Data for the y-axis.
+    
+    x_label (str): Label for the x-axis.
+    y_label (str): Label for the y-axis.
+    title (str): Title of the graph.
+    label_x (str): Legend label for the x variable.
+    label_y (str): Legend label for the y variable.
+    """
+    plt.figure(figsize=(10, 6))  # Create a new figure with a custom size
+    plt.plot(var_1, label=var_1_label, marker='o', linestyle='-')  # Plot the x variable
+    plt.plot(var_2, label=var_2_label, marker='o', linestyle='-')  # Plot the y variable
+    plt.xlabel(x_label)  # Set the label for the x-axis
+    plt.ylabel(y_label)  # Set the label for the y-axis
+    plt.title(title)  # Set the title of the graph
+    plt.legend()  # Add a legend to the graph
+    plt.grid(True)  # Enable grid for better readability
+    plt.show()  # Display the graph
+
+
 
 # EXECUTION:
 
 # 0 Simulation Settings
-region = 'Iowa'
+region = 'Kenya'
 sampling_methods = ['random'] # Options: 'random', 'mic_greedy'
-inference_methods = ['normal_inference'] # Options: 'sample_mean', 'normal_inference'
+inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
 n_reps = 1
-loss_type = 'insurer_loss' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
-years_to_sample = np.arange(2019, 2020)
+loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
+years_to_sample = np.arange(2020, 2021)
 inferred_yield_dict = {}
 loss_dict = {}
 if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
@@ -315,8 +407,14 @@ else: trend_params = [0, 0]
 # 1 Simulation Loop
 for sampling_method in sampling_methods:
     for inference_method in inference_methods:
-        inferred_yield_dict[sampling_method + '_' + inference_method], inferred_yield, true_yield, min_samples, expected_yield = \
+        print('inference_method', inference_method)
+        inferred_yield_dict[sampling_method + '_' + inference_method], sample_mean, true_yield, min_samples, expected_yield = \
                     simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
+        inferred_chart_array = inferred_yield_dict[sampling_method + '_' + inference_method].mean(axis=(1,2))
+        if inference_method != 'sample_mean':
+            sample_mean_chart_array = sample_mean.mean(axis=(1,2))
+            plot_line_graph(inferred_chart_array, sample_mean_chart_array, x_label='n samples', y_label='Estimate vs. trend, BPA', title='Yield Estimates vs. n Samples', var_1_label='Normal Inference', var_2_label='Sample Mean')
+
 # 2 Loss Calculation
 for sampling_inference in inferred_yield_dict.keys():
     if loss_type == 'RMSE':
@@ -353,37 +451,4 @@ plt.ylabel('%s in bushels per acre' % loss_type if region == 'Iowa' else '%s in 
 plt.grid(True)
 plt.legend()
 plt.savefig('graphs/%s_maize_%s_%s.png' % (region, loss_type, title_str))
-plt.show()
-
-''' 
-
-# Plotting RMSE Comparison
-plt.figure(figsize=(8, 6))
-for sampling_inference in loss_dict.keys():
-    plt.plot(samples, loss_dict[sampling_inference], marker='o', linestyle='-', label=sampling_inference)
-#plt.plot(samples, rmse_inference_vector, marker='o', linestyle='-', color='r', label='Inference RMSE')
-title_str = list(loss_dict.keys())[0]
-for key in list(loss_dict.keys())[1:]: title_str += (' vs. ' + key)
-plt.title('%s Maize %s loss: %s' % (region, loss_type, title_str))
-plt.xlabel('Number of samples taken')
-plt.ylabel('RMSE in bushels per acre' if region == 'Iowa' else 'RMSE in tons per hectare')
-plt.grid(True)
-plt.legend()
-plt.savefig('graphs/%s_maize_%s_%s.png' % (region, loss_type, title_str))
-plt.show()
-
-
-
-# Plotting Insurer Loss Comparison
-plt.figure(figsize=(8, 6))
-plt.plot(samples, insurer_loss_sample_vector, marker='o', linestyle='-', color='b', label='Sample Insurer Loss')
-plt.plot(samples, insurer_loss_inference_vector, marker='o', linestyle='-', color='r', label='Inference Insurer Loss')
-plt.title('Comparison of Insurer Loss: Sample vs Inference - %s Maize' % (region))
-plt.xlabel('Number of samples taken')
-plt.ylabel('Insurer Loss in bushels per acre' if region == 'Iowa' else 'Insurer Loss in tons per hectare')
-plt.grid(True)
-plt.legend()
-plt.savefig('graphs/%s_maize_insurer_loss_comparison.png' % (region))
-plt.show()
-
-'''
+#plt.show()
