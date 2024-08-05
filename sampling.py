@@ -217,31 +217,24 @@ class MaizeYieldSampler:
         return
 
 
-def GP_inference(year):
+def GP_inference(sampler, year): #sampler is a class
     # Fit a Gaussian Process and infer the yields of unmeasured samples
 
     # Find indices of what has been sampled and what has not
-    filtered_df = self.yield_data[self.yield_data.year == year]
+    filtered_df = sampler.yield_data[sampler.yield_data.year == year]
     all_indices = set(filtered_df.index)
-    remaining_indices = list(all_indices - self.sampled_indices)
+    remaining_indices = list(all_indices - sampler.sampled_indices)
 
     # Slice data according to what has beene sampled
-    df_sampled = filtered_df.iloc[self.sampled_indices]  # DataFrame of measured samples
-    df_unsampled = df.drop(sampled_indices)  # DataFrame of unmeasured samples
-
-    print('df_sampled',df_sampled)
-    print('df_unsampled',df_unsampled)
-
+    df_sampled = filtered_df.loc[list(sampler.sampled_indices)]  # DataFrame of measured samples
+    df_unsampled = filtered_df.drop(list(sampler.sampled_indices))  # DataFrame of unmeasured samples
 
     # Fit GP
-    gp = fit_GP(measured_samples)
+    gp = fit_GP(df_sampled)
 
     # Calculate predicted yields
     X_unsampled = df_unsampled[['latitude', 'longitude']].values
     y_pred = gp.predict(X_unsampled, return_std=False)
-
-    print('X_unsampled', X_unsampled)
-    print('y_pred', y_pred)
 
     return np.mean(np.hstack((y_pred, df_sampled['yield'].values)))
 
@@ -254,7 +247,7 @@ def fit_GP(df_sampled):
     y = df_sampled['yield'].values
 
     # Kernel with RBF and adjustable constant
-    kernel = C(1.0, (1e-4, 1e1)) * RBF([1, 1], (1e-4, 1e2))
+    kernel = C(1.0, (1e-6, 1e1)) * RBF([1, 1], (1e-3, 1e4))
 
     # Create Gaussian Process model
     gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, alpha=1e-2, normalize_y=True)
@@ -274,7 +267,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     elif region == 'Kenya':
         yield_data_path = 'data/kenya_yield_data.csv'
         covariate_data_path = 'data/kenya_ndvi.csv'
-        max_samples = 10 #number of samples in Kenya's lowest-sample year
+        max_samples = 25 #number of samples in Kenya's lowest-sample year
 
     elif region == 'Synthetic':
         yield_data_path = 'data/synthetic_yield_data_column.csv'
@@ -324,7 +317,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
             if (sampling_method == 'mic_greedy' or inference_method == 'normal_inference'):
                 sampler.conditional_sigma = sampler.covariance_matrix 
                 sampler.conditional_mu = np.zeros((sampler.covariance_matrix.shape[0],)) # Set conditional mean at zeros - works for detrended yield data as in Iowa
-            if rep % 13 == 0: print('Rep number %d' % rep)
+            if rep % 7 == 0: print('Rep number %d' % rep)
             stop = False
             n_samples = 0
             sample_vals = []
@@ -334,7 +327,6 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                 if sampling_method == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
                 elif sampling_method == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
                 sample_vals += [yield_val]
-                print('sample_vals', sample_vals[-1])
 
                 # Updating yield estimate
                 sample_mean[n_samples, rep, year-years_to_sample[0]] = np.mean(sample_vals)
@@ -342,8 +334,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                     sampler.update_mu_sigma(year, next_sample_idx, yield_val)
                     inferred_yield[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
                 elif inference_method == 'GP_inference':
-                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = GP_inference(year)
-                print('inferred_yield', inferred_yield[0][0][0])
+                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = GP_inference(sampler, year)
 
                 # Stopping due to max_samples being reached
                 n_samples += 1
@@ -396,9 +387,9 @@ def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Lin
 region = 'Kenya'
 sampling_methods = ['random'] # Options: 'random', 'mic_greedy'
 inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
-n_reps = 1
+n_reps = 25
 loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
-years_to_sample = np.arange(2020, 2021)
+years_to_sample = np.arange(2019, 2024)
 inferred_yield_dict = {}
 loss_dict = {}
 if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
@@ -413,11 +404,12 @@ for sampling_method in sampling_methods:
         inferred_chart_array = inferred_yield_dict[sampling_method + '_' + inference_method].mean(axis=(1,2))
         if inference_method != 'sample_mean':
             sample_mean_chart_array = sample_mean.mean(axis=(1,2))
-            plot_line_graph(inferred_chart_array, sample_mean_chart_array, x_label='n samples', y_label='Estimate vs. trend, BPA', title='Yield Estimates vs. n Samples', var_1_label='Normal Inference', var_2_label='Sample Mean')
+            plot_line_graph(inferred_chart_array, sample_mean_chart_array, x_label='n samples', y_label='Estimate vs. trend, tons/ha', title='Yield Estimates vs. n Samples', var_1_label='GP Inference', var_2_label='Sample Mean')
 
 # 2 Loss Calculation
 for sampling_inference in inferred_yield_dict.keys():
     if loss_type == 'RMSE':
+        print('true_yield', true_yield)
         squared_error = np.square(inferred_yield_dict[sampling_inference] - true_yield) # Dimension: max_samples, n_runs, n_years
         loss_tmp = np.mean(squared_error, axis=1)**.5 #Calculate the root mean squared error of each yield estimate in sample_mean
 
@@ -438,7 +430,6 @@ samples = np.arange(1, min_samples + 1)
 
 # Plotting RMSE Alone
 # Plotting RMSE Comparison
-#loss_dict['mic_greedy_sample_mean'] = np.asarray([2.85, 1.68, 1.3, .81, .8, .73, .79, .73, .72, .73, .74, .6, .55, .49, .48, .42, .38, .37, .37, .36, .365, .27, .23, .24, .24, .23, .15, .2, .2, .21, .23, .25, .24, .25, .25, .24, .24, .27, .26, .26, .25, .25, .24, .26, .26, .26, .25, .23, .21, .19])
 plt.figure(figsize=(8, 6))
 for sampling_inference in loss_dict.keys():
     plt.plot(samples, loss_dict[sampling_inference], marker='o', linestyle='-', label=sampling_inference)
