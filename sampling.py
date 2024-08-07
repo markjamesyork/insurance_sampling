@@ -111,6 +111,46 @@ class MaizeYieldSampler:
         else: #Return none if all indices have already been sampled
             return None, None
 
+    def highest_mutual_information_gain_sample(self, cov):
+        # Calculate the mutual information gain from selecting each unsampled index and track the higehst one
+
+        # Variable definitions
+        remaining_indices = list(all_indices - self.sampled_indices)
+        sampled_indices = list(self.sampled_indices)
+
+        # Core calculations
+        Sigma_AA = cov[np.ix_(sampled_indices, sampled_indices)]
+        Sigma_AA_inv = np.linalg.inv(Sigma_AA)
+        delta = -10**9
+        for index in remaining_indices:
+            # Create matrices needed to calculate mutual information
+            Sigma_Ay = cov[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
+            remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
+            Sigma_woAy = cov[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
+            Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
+            Sigma_complAy = cov[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
+
+            # Calculate delta of each sample and update
+            if len(sampled_indices) == 0:
+                delta_tmp = cov[index, index] \
+                            / (cov[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
+            else:
+                delta_tmp = (cov[index, index] - Sigma_Ay @ Sigma_AA_inv @ Sigma_Ay.T) \
+                            / (cov[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
+            
+            if delta_tmp[0][0] > delta:
+                delta = delta_tmp
+                next_sample_id = index
+        return
+
+
+    def next_sample_gp_mic_greedy(self, year, gp):
+        # Use gp to determine covariance matrix, mutual information, and next sample to greedily select
+        # Compute the covariance matrix of points using the gp kernel
+        fitted_kernel = dp.kernel_
+        covariance_matrix = fitted_kernel(TODO)
+        return next_sample_idx, yield_val
+
     def update_predictions(self):
         # Update model's predictions based on newly selected samples
         pass
@@ -236,7 +276,7 @@ def GP_inference(sampler, year): #sampler is a class
     X_unsampled = df_unsampled[['latitude', 'longitude']].values
     y_pred = gp.predict(X_unsampled, return_std=False)
 
-    return np.mean(np.hstack((y_pred, df_sampled['yield'].values)))
+    return np.mean(np.hstack((y_pred, df_sampled['yield'].values))), gp
 
 
 def fit_GP(df_sampled):
@@ -255,7 +295,7 @@ def fit_GP(df_sampled):
     return gp.fit(X, y) # Returns fit Gaussian Process
 
 
-def simulate(region, sampling_method, inference_method, n_reps, years_to_sample):
+def simulate(region, sampling_method, inference_method, n_reps, years_to_sample, log_yield):
     # This function calls the MaizeYieldSampler class for various settings of sampling and inference methods
 
     # Create region-specific settings
@@ -267,7 +307,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     elif region == 'Kenya':
         yield_data_path = 'data/kenya_yield_data.csv'
         covariate_data_path = 'data/kenya_ndvi.csv'
-        max_samples = 25 #number of samples in Kenya's lowest-sample year
+        max_samples = 200 #number of samples in Kenya's lowest-sample year
 
     elif region == 'Synthetic':
         yield_data_path = 'data/synthetic_yield_data_column.csv'
@@ -289,6 +329,8 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
     sampler = MaizeYieldSampler()
     sampler.read_yield_data(yield_data_path)
     sampler.yield_data = sampler.yield_data.dropna()
+    if log_yield == True: # Makes lognormal data look normal
+        sampler.yield_data['yield'] = np.log1p(sampler.yield_data['yield']) # np.log1p(x) is equivalent to np.log(1 + x) and is more numerically stable
 
     # Calculate expected yield based on yield data from all years before target year:
     expected_yield = []
@@ -326,6 +368,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                 # Pull Sample
                 if sampling_method == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
                 elif sampling_method == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
+                elif sampling_method == 'GP_mic_greedy': next_sample_idx, yield_val = sampler.next_sample_gp_mic_greedy(year)
                 sample_vals += [yield_val]
 
                 # Updating yield estimate
@@ -334,7 +377,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
                     sampler.update_mu_sigma(year, next_sample_idx, yield_val)
                     inferred_yield[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
                 elif inference_method == 'GP_inference':
-                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = GP_inference(sampler, year)
+                    inferred_yield[n_samples, rep, year-years_to_sample[0]], gp = GP_inference(sampler, year)
 
                 # Stopping due to max_samples being reached
                 n_samples += 1
@@ -385,9 +428,10 @@ def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Lin
 
 # 0 Simulation Settings
 region = 'Kenya'
-sampling_methods = ['random'] # Options: 'random', 'mic_greedy'
+log_yield = True # If True, read yield data as log(1 + yield). This is to make lognormal data look more normal
+sampling_methods = ['random'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
 inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
-n_reps = 25
+n_reps = 10
 loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
 years_to_sample = np.arange(2019, 2024)
 inferred_yield_dict = {}
@@ -400,7 +444,7 @@ for sampling_method in sampling_methods:
     for inference_method in inference_methods:
         print('inference_method', inference_method)
         inferred_yield_dict[sampling_method + '_' + inference_method], sample_mean, true_yield, min_samples, expected_yield = \
-                    simulate(region, sampling_method, inference_method, n_reps, years_to_sample)
+                    simulate(region, sampling_method, inference_method, n_reps, years_to_sample, log_yield)
         inferred_chart_array = inferred_yield_dict[sampling_method + '_' + inference_method].mean(axis=(1,2))
         if inference_method != 'sample_mean':
             sample_mean_chart_array = sample_mean.mean(axis=(1,2))
