@@ -72,6 +72,8 @@ class MaizeYieldSampler:
 
     def next_sample_mic_greedy(self, year):
         # Select the unsampled index which greedily maximizes mutual information
+
+        # Define sets of indices
         filtered_df = self.yield_data[self.yield_data.year == year]
         filtered_df = filtered_df.reset_index(drop=True)
         all_indices = set(filtered_df.index)
@@ -79,29 +81,7 @@ class MaizeYieldSampler:
         sampled_indices = list(self.sampled_indices)
 
         if remaining_indices:
-            # Calculate the mutual information gain from selecting each remaining index and track the higehst one
-            Sigma_AA = self.covariance_matrix[np.ix_(sampled_indices, sampled_indices)]
-            Sigma_AA_inv = np.linalg.inv(Sigma_AA)
-            delta = -10**9
-            for index in remaining_indices:
-                # Create matrices needed to calculate mutual information
-                Sigma_Ay = self.covariance_matrix[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
-                remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
-                Sigma_woAy = self.covariance_matrix[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
-                Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
-                Sigma_complAy = self.covariance_matrix[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
-
-                # Calculate delta of each sample and update
-                if len(sampled_indices) == 0:
-                    delta_tmp = self.covariance_matrix[index, index] \
-                                / (self.covariance_matrix[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
-                else:
-                    delta_tmp = (self.covariance_matrix[index, index] - Sigma_Ay @ Sigma_AA_inv @ Sigma_Ay.T) \
-                                / (self.covariance_matrix[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
-                
-                if delta_tmp[0][0] > delta:
-                    delta = delta_tmp
-                    next_sample_id = index
+            next_sample_id = highest_mutual_information_gain_sample(self.covariance_matrix, all_indices, sampled_indices, remaining_indices)
 
             # Pull yield value for selected sample and add to list of sampled indices
             yield_val = filtered_df.loc[next_sample_id, 'yield']
@@ -111,12 +91,8 @@ class MaizeYieldSampler:
         else: #Return none if all indices have already been sampled
             return None, None
 
-    def highest_mutual_information_gain_sample(self, cov):
-        # Calculate the mutual information gain from selecting each unsampled index and track the higehst one
-
-        # Variable definitions
-        remaining_indices = list(all_indices - self.sampled_indices)
-        sampled_indices = list(self.sampled_indices)
+    def highest_mutual_information_gain_sample(self, cov, all_indices, sampled_indices, remaining_indices):
+        # Find the unsampled index with the highest mutual information gain
 
         # Core calculations
         Sigma_AA = cov[np.ix_(sampled_indices, sampled_indices)]
@@ -141,15 +117,37 @@ class MaizeYieldSampler:
             if delta_tmp[0][0] > delta:
                 delta = delta_tmp
                 next_sample_id = index
-        return
+
+        return next_sample_id
 
 
     def next_sample_gp_mic_greedy(self, year, gp):
         # Use gp to determine covariance matrix, mutual information, and next sample to greedily select
+
+        # Define sets of indices
+        filtered_df = self.yield_data[self.yield_data.year == year]
+        filtered_df = filtered_df.reset_index(drop=True)
+        all_indices = set(filtered_df.index)
+        remaining_indices = list(all_indices - self.sampled_indices)
+        sampled_indices = list(self.sampled_indices)
+
         # Compute the covariance matrix of points using the gp kernel
-        fitted_kernel = dp.kernel_
-        covariance_matrix = fitted_kernel(TODO)
-        return next_sample_idx, yield_val
+        X_points = df_2019[['latitude', 'longitude']].values
+        covariance_matrix = gp.kernel_(X_points)
+
+        # Find the next sample which maximizes the mutual information
+        if remaining_indices:
+            # Find the next sample
+            next_sample_id = highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
+
+            # Pull yield value for selected sample and add to list of sampled indices
+            yield_val = filtered_df.loc[next_sample_id, 'yield']
+            self.sampled_indices.add(next_sample_id)
+            return next_sample_id, yield_val
+
+        else: #Return none if all indices have already been sampled
+            return None, None
+
 
     def update_predictions(self):
         # Update model's predictions based on newly selected samples
@@ -349,6 +347,14 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
         expected_yield = sampler.yield_data[sampler.yield_data['year'] != year]['yield'].mean() #calculates expected yield as the mean of yield from all years other than target year
         rep = 0
 
+        # If using a Gaussian Process for sample selection, set an initial default
+        if sampling_method == 'GP_mic_greedy':
+            if year == years_to_sample[0]:
+                gp = None # Passes None to the sample selection function, which will then use the identity matrix as the covariance matrix
+            else:
+                df_past_year = sampler.yield_data[sampler.yield_data.year == (year - 1)]
+                gp = fit_GP(df_past_year) # Fits a gaussian process to last year's yield data
+
         # Check that max_samples is not greater than the number of samples in target year
         target_year_samples = len(target_year_yields)
         if target_year_samples < min_samples: min_samples = target_year_samples
@@ -368,7 +374,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
                 # Pull Sample
                 if sampling_method == 'random': next_sample_idx, yield_val = sampler.next_sample_random(year)
                 elif sampling_method == 'mic_greedy': next_sample_idx, yield_val = sampler.next_sample_mic_greedy(year) #mic = mutual information criterion
-                elif sampling_method == 'GP_mic_greedy': next_sample_idx, yield_val = sampler.next_sample_gp_mic_greedy(year)
+                elif sampling_method == 'GP_mic_greedy': next_sample_idx, yield_val = sampler.next_sample_gp_mic_greedy(year, gp)
                 sample_vals += [yield_val]
 
                 # Updating yield estimate
