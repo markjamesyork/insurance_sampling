@@ -88,8 +88,10 @@ def calculate_rmse_for_distances(yield_data, target_years, max_dists):
 
 
 # Execution:
+'''
 yield_data = pd.read_csv('data/kenya_yield_data.csv')  # Update with your actual file path
 target_years = [2019, 2020, 2021, 2022, 2023]
 max_dists = [10, 25, 50, 100, 150, 250, 500]  # Distances in kilometers
 rmse_results = calculate_rmse_for_distances(yield_data, target_years, max_dists)
+'''
 

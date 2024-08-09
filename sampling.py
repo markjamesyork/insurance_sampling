@@ -76,13 +76,42 @@ class MaizeYieldSampler:
 
         # Define sets of indices
         filtered_df = self.yield_data[self.yield_data.year == year]
-        filtered_df = filtered_df.reset_index(drop=True)
+        #filtered_df = filtered_df.reset_index(drop=True)
         all_indices = set(filtered_df.index)
         remaining_indices = list(all_indices - self.sampled_indices)
         sampled_indices = list(self.sampled_indices)
 
         if remaining_indices:
             next_sample_id = highest_mutual_information_gain_sample(self.covariance_matrix, all_indices, sampled_indices, remaining_indices)
+
+            # Pull yield value for selected sample and add to list of sampled indices
+            yield_val = filtered_df.loc[next_sample_id, 'yield']
+            self.sampled_indices.add(next_sample_id)
+            return next_sample_id, yield_val
+
+        else: #Return none if all indices have already been sampled
+            return None, None
+
+    def next_sample_gp_mic_greedy(self, year, gp):
+        # Use gp to determine covariance matrix, mutual information, and next sample to greedily select
+
+        # Define sets of indices
+        filtered_df = self.yield_data[self.yield_data.year == year]
+        all_indices = set(filtered_df.index)
+        remaining_indices = list(all_indices - self.sampled_indices)
+        sampled_indices = list(self.sampled_indices)
+
+        # Compute the covariance matrix of points using the gp kernel
+        if gp != None:
+            X_points = filtered_df[['latitude', 'longitude']].values
+            covariance_matrix = gp.kernel_(X_points)
+
+        # Find the next sample which maximizes the mutual information
+        if remaining_indices:
+            # Find the next sample
+            if gp != None and np.linalg.det(covariance_matrix) != 0:
+                next_sample_id = self.highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
+            else: next_sample_id = random.choice(remaining_indices) # If no gaussian process is passed, return a random index
 
             # Pull yield value for selected sample and add to list of sampled indices
             yield_val = filtered_df.loc[next_sample_id, 'yield']
@@ -121,37 +150,6 @@ class MaizeYieldSampler:
 
         return next_sample_id
 
-
-    def next_sample_gp_mic_greedy(self, year, gp):
-        # Use gp to determine covariance matrix, mutual information, and next sample to greedily select
-
-        # Define sets of indices
-        filtered_df = self.yield_data[self.yield_data.year == year]
-        filtered_df = filtered_df.reset_index(drop=True)
-        all_indices = set(filtered_df.index)
-        remaining_indices = list(all_indices - self.sampled_indices)
-        sampled_indices = list(self.sampled_indices)
-
-        # Compute the covariance matrix of points using the gp kernel
-        if gp != None:
-            X_points = filtered_df[['latitude', 'longitude']].values
-            covariance_matrix = gp.kernel_(X_points)
-
-        # Find the next sample which maximizes the mutual information
-        if remaining_indices:
-            # Find the next sample
-            if gp != None and np.linalg.det(covariance_matrix) != 0:
-                next_sample_id = self.highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
-            else: next_sample_id = random.choice(remaining_indices) # If no gaussian process is passed, return a random index
-
-            # Pull yield value for selected sample and add to list of sampled indices
-            yield_val = filtered_df.loc[next_sample_id, 'yield']
-            self.sampled_indices.add(next_sample_id)
-            return next_sample_id, yield_val
-
-        else: #Return none if all indices have already been sampled
-            return None, None
-
     def update_predictions(self):
         # Update model's predictions based on newly selected samples
         pass
@@ -165,7 +163,7 @@ class MaizeYieldSampler:
         else:
             return None
 
-    def insurance_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
+    def insurance_estimation_error_loss(self, inferred_yield, true_yield_mean, expected_yield, trend_yield):
         # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
         loss_threshold = .95
         guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
@@ -175,21 +173,27 @@ class MaizeYieldSampler:
 
         return loss, actual_payout
 
-    def full_insurer_loss(samples, per_sample_measurement_cost, per_km_travel_cost):
+    def full_insurer_loss(self, inference_method, post_hoc_yield_data = None):
         # This function calculates the full insurer utility, including estimation error loss, sample measurement cost and travel cost.
 
         # Parameter settings
-        per_sample_measurement_cost = 15 # Two workers, two hours, $3.75 per hour
-        per_km_travel_cost = 0.7 # 30 km / hr, 7 km per liter, full calc in writeup
+        per_sample_measurement_cost = 15 # Two workers, two hours, $3.75 per hour, in USD
+        per_km_travel_cost = 0.7 # 30 km / hr, 7 km per liter, repairs = fuel * .5, 2 employees @ $3.75/hr, full calc in writeup, in USD
+        cost_per_unit_est_error = 
 
         # Distance traveled
         lats_lons = np.vstack((latitudes, longitudes)).T
         distance_traveled, path = tsp(lats_lons)
 
         # Estimation error loss
-        estimation_error_loss = ()
+        estimation_error_loss = insurance_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
 
-        return estimation_error_loss + len(samples) * per_sample_measurement_cost + distance_traveled * per_km_travel_cost
+        # Add up full loss
+        full_loss = estimation_error_loss * cost_per_unit_est_error \
+                    + len(samples) * per_sample_measurement_cost \
+                    + distance_traveled * per_km_travel_cost
+
+        return full_loss
 
     def higham_approximation(self, A):
         # Finds the nearest positive semidefinite matrix to A using CVXPY.
@@ -278,7 +282,9 @@ def GP_inference(sampler, year): #sampler is a class
     remaining_indices = list(all_indices - sampler.sampled_indices)
 
     # Slice data according to what has beene sampled
-    df_sampled = filtered_df.loc[list(sampler.sampled_indices)]  # DataFrame of measured samples
+    filtered_df.to_csv('filtered_df.csv')
+    df_sampled = filtered_df.reindex(list(sampler.sampled_indices))  # DataFrame of measured samples
+    df_sampled.to_csv('df_sampled.csv')
     df_unsampled = filtered_df.drop(list(sampler.sampled_indices))  # DataFrame of unmeasured samples
 
     # Fit GP
@@ -319,7 +325,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
     elif region == 'Kenya':
         yield_data_path = 'data/kenya_yield_data.csv'
         covariate_data_path = 'data/kenya_ndvi.csv'
-        max_samples = 3 #number of samples in Kenya's lowest-sample year
+        max_samples = 100 #number of samples in Kenya's lowest-sample year
 
     elif region == 'Synthetic':
         yield_data_path = 'data/synthetic_yield_data_column.csv'
@@ -449,11 +455,11 @@ def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Lin
 # 0 Simulation Settings
 region = 'Kenya'
 log_yield = True # If True, read yield data as log(1 + yield). This is to make lognormal data look more normal
-sampling_methods = ['GP_mic_greedy'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
+sampling_methods = ['random', 'GP_mic_greedy'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
 inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
-n_reps = 1
+n_reps = 10
 loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
-years_to_sample = np.arange(2019, 2020)
+years_to_sample = np.arange(2019, 2022)
 inferred_yield_dict = {}
 loss_dict = {}
 if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya

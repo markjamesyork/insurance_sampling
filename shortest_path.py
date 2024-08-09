@@ -41,25 +41,24 @@ def map_results(latitudes, longitudes, order):
 
 
 # Execution:
-'''
-latitudes = np.array([34.0522, 36.7783, 40.7128, 38.99, 35.1])
-longitudes = np.array([-118.2437, -119.4179, -74.0060, -107., -107.])
-'''
-n = 200
-latitudes = np.random.random((n,)) * 180 - 90
-longitudes = np.random.random((n,)) * 360 - 180
-lat_lons = np.vstack((latitudes, longitudes)).T
-print('lat_lons', lat_lons)
+def random_points_map():
+    # This function generates n random points, finds the shortest path, and maps it
+
+    n = 25
+    latitudes = np.random.random((n,)) * 10 - 5
+    longitudes = np.random.random((n,)) * 8 + 34
+    lat_lons = np.vstack((latitudes, longitudes)).T
+    print('lat_lons', lat_lons)
 
 
-distance_matrix = create_distance_matrix(latitudes, longitudes)
-print("Distance Matrix:")
-print(np.round(distance_matrix,0))
+    distance_matrix = create_distance_matrix(latitudes, longitudes)
+    print("Distance Matrix:")
+    print(np.round(distance_matrix,0))
 
-TSP = tsp(lat_lons)
-print('TSP', TSP)
+    TSP = tsp(lat_lons)
+    print('TSP', TSP)
 
-map_results(latitudes, longitudes, TSP[1])
+    map_results(latitudes, longitudes, TSP[1])
 
 
 
