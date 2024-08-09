@@ -1,11 +1,12 @@
-    #This script reads covariance and yield data, implements a sampling strategy, and stores the results.
+#This script reads covariance and yield data, implements a sampling strategy, and stores the results.
 
 from christofides import*
+from shortest_path import*
 import cvxpy as cp
-#from calc_yield_prior import haversine #another script in this project
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import random
 from scipy.stats import multivariate_normal
 from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
@@ -132,13 +133,16 @@ class MaizeYieldSampler:
         sampled_indices = list(self.sampled_indices)
 
         # Compute the covariance matrix of points using the gp kernel
-        X_points = df_2019[['latitude', 'longitude']].values
-        covariance_matrix = gp.kernel_(X_points)
+        if gp != None:
+            X_points = filtered_df[['latitude', 'longitude']].values
+            covariance_matrix = gp.kernel_(X_points)
 
         # Find the next sample which maximizes the mutual information
         if remaining_indices:
             # Find the next sample
-            next_sample_id = highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
+            if gp != None and np.linalg.det(covariance_matrix) != 0:
+                next_sample_id = self.highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
+            else: next_sample_id = random.choice(remaining_indices) # If no gaussian process is passed, return a random index
 
             # Pull yield value for selected sample and add to list of sampled indices
             yield_val = filtered_df.loc[next_sample_id, 'yield']
@@ -147,7 +151,6 @@ class MaizeYieldSampler:
 
         else: #Return none if all indices have already been sampled
             return None, None
-
 
     def update_predictions(self):
         # Update model's predictions based on newly selected samples
@@ -162,7 +165,7 @@ class MaizeYieldSampler:
         else:
             return None
 
-    def insurer_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
+    def insurance_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield):
         # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
         loss_threshold = .95
         guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
@@ -172,10 +175,21 @@ class MaizeYieldSampler:
 
         return loss, actual_payout
 
-    def full_insurer_utility(samples, per_sample_measurement_cost, per_km_travel_cost):
+    def full_insurer_loss(samples, per_sample_measurement_cost, per_km_travel_cost):
         # This function calculates the full insurer utility, including estimation error loss, sample measurement cost and travel cost.
 
-        return len(samples) * per_sample_measurement_cost
+        # Parameter settings
+        per_sample_measurement_cost = 15 # Two workers, two hours, $3.75 per hour
+        per_km_travel_cost = 0.7 # 30 km / hr, 7 km per liter, full calc in writeup
+
+        # Distance traveled
+        lats_lons = np.vstack((latitudes, longitudes)).T
+        distance_traveled, path = tsp(lats_lons)
+
+        # Estimation error loss
+        estimation_error_loss = ()
+
+        return estimation_error_loss + len(samples) * per_sample_measurement_cost + distance_traveled * per_km_travel_cost
 
     def higham_approximation(self, A):
         # Finds the nearest positive semidefinite matrix to A using CVXPY.
@@ -305,7 +319,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
     elif region == 'Kenya':
         yield_data_path = 'data/kenya_yield_data.csv'
         covariate_data_path = 'data/kenya_ndvi.csv'
-        max_samples = 200 #number of samples in Kenya's lowest-sample year
+        max_samples = 3 #number of samples in Kenya's lowest-sample year
 
     elif region == 'Synthetic':
         yield_data_path = 'data/synthetic_yield_data_column.csv'
@@ -350,7 +364,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
         # If using a Gaussian Process for sample selection, set an initial default
         if sampling_method == 'GP_mic_greedy':
             if year == years_to_sample[0]:
-                gp = None # Passes None to the sample selection function, which will then use the identity matrix as the covariance matrix
+                gp = None # Passes None to the sample selection function, which will then select a random sample
             else:
                 df_past_year = sampler.yield_data[sampler.yield_data.year == (year - 1)]
                 gp = fit_GP(df_past_year) # Fits a gaussian process to last year's yield data
@@ -435,11 +449,11 @@ def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Lin
 # 0 Simulation Settings
 region = 'Kenya'
 log_yield = True # If True, read yield data as log(1 + yield). This is to make lognormal data look more normal
-sampling_methods = ['random'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
+sampling_methods = ['GP_mic_greedy'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
 inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
-n_reps = 10
+n_reps = 1
 loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss', 'insurer_loss_with_travel'
-years_to_sample = np.arange(2019, 2024)
+years_to_sample = np.arange(2019, 2020)
 inferred_yield_dict = {}
 loss_dict = {}
 if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
