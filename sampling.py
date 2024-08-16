@@ -61,12 +61,12 @@ class MaizeYieldSampler:
 
         filtered_df = self.yield_data[self.yield_data.year == year]
         all_indices = set(filtered_df.index)
-        remaining_indices = list(all_indices - self.sampled_indices)
+        remaining_indices = list(all_indices - set(self.sampled_indices))
 
         if remaining_indices:
             next_sample_id = np.random.choice(remaining_indices)
             yield_val = filtered_df.loc[next_sample_id, 'yield']
-            self.sampled_indices.add(next_sample_id)
+            self.sampled_indices += [next_sample_id]
             return next_sample_id, yield_val
         else:
             return None, None
@@ -78,15 +78,14 @@ class MaizeYieldSampler:
         filtered_df = self.yield_data[self.yield_data.year == year]
         #filtered_df = filtered_df.reset_index(drop=True)
         all_indices = set(filtered_df.index)
-        remaining_indices = list(all_indices - self.sampled_indices)
-        sampled_indices = list(self.sampled_indices)
+        remaining_indices = list(all_indices - set(self.sampled_indices))
 
         if remaining_indices:
-            next_sample_id = highest_mutual_information_gain_sample(self.covariance_matrix, all_indices, sampled_indices, remaining_indices)
+            next_sample_id = highest_mutual_information_gain_sample(self.covariance_matrix, all_indices, self.sampled_indices, remaining_indices)
 
             # Pull yield value for selected sample and add to list of sampled indices
             yield_val = filtered_df.loc[next_sample_id, 'yield']
-            self.sampled_indices.add(next_sample_id)
+            self.sampled_indices += [next_sample_id]
             return next_sample_id, yield_val
 
         else: #Return none if all indices have already been sampled
@@ -98,8 +97,7 @@ class MaizeYieldSampler:
         # Define sets of indices
         filtered_df = self.yield_data[self.yield_data.year == year]
         all_indices = set(filtered_df.index)
-        remaining_indices = list(all_indices - self.sampled_indices)
-        sampled_indices = list(self.sampled_indices)
+        remaining_indices = list(all_indices - set(self.sampled_indices))
 
         # Compute the covariance matrix of points using the gp kernel
         if gp != None:
@@ -110,34 +108,34 @@ class MaizeYieldSampler:
         if remaining_indices:
             # Find the next sample
             if gp != None and np.linalg.det(covariance_matrix) != 0:
-                next_sample_id = self.highest_mutual_information_gain_sample(covariance_matrix, all_indices, sampled_indices, remaining_indices)
+                next_sample_id = self.highest_mutual_information_gain_sample(covariance_matrix, all_indices, self.sampled_indices, remaining_indices)
             else: next_sample_id = random.choice(remaining_indices) # If no gaussian process is passed, return a random index
 
             # Pull yield value for selected sample and add to list of sampled indices
             yield_val = filtered_df.loc[next_sample_id, 'yield']
-            self.sampled_indices.add(next_sample_id)
+            self.sampled_indices += [next_sample_id]
             return next_sample_id, yield_val
 
         else: #Return none if all indices have already been sampled
             return None, None
 
-    def highest_mutual_information_gain_sample(self, cov, all_indices, sampled_indices, remaining_indices):
+    def highest_mutual_information_gain_sample(self, cov, all_indices, remaining_indices):
         # Find the unsampled index with the highest mutual information gain
 
         # Core calculations
-        Sigma_AA = cov[np.ix_(sampled_indices, sampled_indices)]
+        Sigma_AA = cov[np.ix_(self.sampled_indices, self.sampled_indices)]
         Sigma_AA_inv = np.linalg.inv(Sigma_AA)
         delta = -10**9
         for index in remaining_indices:
             # Create matrices needed to calculate mutual information
-            Sigma_Ay = cov[np.ix_([index], sampled_indices)] # Covariance matrix slice of A and y
+            Sigma_Ay = cov[np.ix_([index], self.sampled_indices)] # Covariance matrix slice of A and y
             remaining_less_y = [i for i in remaining_indices if i != index] # Remaining indices with index 
             Sigma_woAy = cov[np.ix_(remaining_less_y, remaining_less_y)] #Sigma without A and y
             Sigma_woAy_inv = np.linalg.inv(Sigma_woAy)
             Sigma_complAy = cov[np.ix_([index], remaining_less_y)] # Covariance matrix slice of V \ (A U y) and y
 
             # Calculate delta of each sample and update
-            if len(sampled_indices) == 0:
+            if len(self.sampled_indices) == 0:
                 delta_tmp = cov[index, index] \
                             / (cov[index, index] - Sigma_complAy @ Sigma_woAy_inv @ Sigma_complAy.T)
             else:
@@ -157,7 +155,7 @@ class MaizeYieldSampler:
     def calculate_rmse(self):
         # Calculate RMSE between actual yields and your model's predictions
         if self.predictions:
-            actual = self.yield_data.iloc[list(self.sampled_indices)]
+            actual = self.yield_data.iloc[self.sampled_indices]
             predicted = [self.predictions[i] for i in self.sampled_indices]
             return mean_squared_error(actual, predicted, squared=False)
         else:
@@ -183,9 +181,12 @@ class MaizeYieldSampler:
 
         return loss, actual_payout
 
-    def full_insurer_loss(self, samples, n_farms, inferred_yield, true_yield, expected_yield, trend_yield):
+    def final_insurer_loss(self, samples, n_farms, inferred_yield, true_yield, expected_yield, trend_yield):
+        # This function calculates the full insurer loss after the final yield is known. It removes a list of lists, where list i
+        # contains the losses after sample i is taken, and each element of the list represents a sub-category of loss
+        # [sample-taking cost, travel cost, measurement error cost]
 
-        loss_vector = full_insurer_loss(self, sampler.sampled_indices, target_year_yields.shape[0], \
+        loss_vector = final_full_insurer_loss(self, target_year_yields.shape[0], \
                             inferred_yields[:, rep, year-years_to_sample[0]], post_hoc_yield_data = true_yield)
 
         # This function calculates the full insurer utility, including estimation error loss, sample measurement cost and travel cost.
@@ -205,19 +206,18 @@ class MaizeYieldSampler:
             # Distance traveled
             distance_traveled, path = tsp(lat_lon_array[:i+1,:])
 
-        # Estimation error loss when final yield is not known
-        interim_estimation_error_loss = interim_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
+            # Estimation error loss when final yield is not known
+            #interim_estimation_error_loss = interim_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
 
             # Estimation error when loss final yield is known
-            final_estimation_error_loss = final_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
+            final_estimation_error_loss, actual_payouts = final_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
 
-            # Add up full losses
-            ex_estimation_loss = len(samples) * per_sample_measurement_cost, \
-                        distance_traveled * per_km_travel_cost
-            interim_losses = ex_estimation_loss + 
-            final_losses = ex_estimation_loss + 
+            # Add list of all loss types to losses list
+            losses += [i * per_sample_measurement_cost, \
+                        distance_traveled * per_km_travel_cost, \
+                        final_estimation_error_loss]
 
-        return interim_losses, final_losses
+        return losses
 
     def higham_approximation(self, A):
         # Finds the nearest positive semidefinite matrix to A using CVXPY.
@@ -265,11 +265,7 @@ class MaizeYieldSampler:
 
         # Find indices for sample to pull and for remaining samples within self.conditional_sigma 
         all_indices = set(filtered_df.index)
-        filtered_df.to_csv('data/filtered_df.csv')
-        remaining_indices = all_indices - (self.sampled_indices - {observed_index}) # Set contains current sample to evaluate
-        #print('remaining_indices', remaining_indices)
-        #print('observed_index', observed_index)
-        #print('all_indices', all_indices)
+        remaining_indices = all_indices - (set(self.sampled_indices) - {observed_index}) # Set contains current sample to evaluate
         obs_index_in_remaining = list(remaining_indices).index(observed_index) # Index of the currently-observed index within all remaining unsampled indices
         remaining_less_obs = list(remaining_indices - {observed_index})
 
@@ -282,14 +278,6 @@ class MaizeYieldSampler:
         self.conditional_sigma = sigma_oo - np.outer(sigma_oi, sigma_oi.T) / sigma_ii
         
         # Update the mean vector for unobserved variables
-        '''
-        print('self.conditional_mu', self.conditional_mu)
-        print('obs_index_in_remaining', obs_index_in_remaining)
-        print('observed_index', observed_index)
-        print('remaining_indices', remaining_indices)
-        print('self.sampled_indices', self.sampled_indices)
-        print('all_indices', all_indices)
-        '''
         mu_i = self.conditional_mu[obs_index_in_remaining]
         mu_o = np.delete(self.conditional_mu, obs_index_in_remaining, 0)
         self.conditional_mu = mu_o + (observed_value - mu_i) * (sigma_oi / sigma_ii)
@@ -303,13 +291,13 @@ def GP_inference(sampler, year): #sampler is a class
     # Find indices of what has been sampled and what has not
     filtered_df = sampler.yield_data[sampler.yield_data.year == year]
     all_indices = set(filtered_df.index)
-    remaining_indices = list(all_indices - sampler.sampled_indices)
+    remaining_indices = list(all_indices - set(sampler.sampled_indices))
 
     # Slice data according to what has beene sampled
     filtered_df.to_csv('filtered_df.csv')
-    df_sampled = filtered_df.reindex(list(sampler.sampled_indices))  # DataFrame of measured samples
+    df_sampled = filtered_df.reindex(sampler.sampled_indices) # DataFrame of measured samples
     df_sampled.to_csv('df_sampled.csv')
-    df_unsampled = filtered_df.drop(list(sampler.sampled_indices))  # DataFrame of unmeasured samples
+    df_unsampled = filtered_df.drop(sampler.sampled_indices)  # DataFrame of unmeasured samples
 
     # Fit GP
     gp = fit_GP(df_sampled)
@@ -438,7 +426,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
                 loss_vector = full_insurer_loss(self, sampler.sampled_indices, target_year_yields.shape[0], \
                             inferred_yields[:, rep, year-years_to_sample[0]], post_hoc_yield_data = true_yield)
 
-            sampler.sampled_indices = set() #reset to no samples taken
+            sampler.sampled_indices = [] #reset to no samples taken
             rep += 1
 
     # Return predicted yield results
@@ -517,19 +505,12 @@ for sampling_inference in inferred_yield_dict.keys(): # Runs once for each sampl
 
         # Call the insurer loss calculation function once for each run of samples taken
         for rep in range(n_reps):
-            loss_tmp = full_insurer_loss(sample_sequence, n_farms, inference_method, post_hoc_yield_data = true_yield)
+            losses = full_insurer_loss(sample_sequence, n_farms, inferred_yield, true_yield, expected_yield, trend_yield)
 
-            loss_tmp, actual_payout = insurer_loss(inferred_yield_dict[sampling_inference], true_yield, expected_yield, trend_yield)
             loss_tmp = np.mean(loss_tmp, axis=1)
-            # TODO: ensure that shape of loss_tmp is (max_samples, n_years)
+
             print('loss_tmp.shape', loss_tmp.shape)
 
-            ''' From insurer loss function above
-            estimation_error_loss = insurance_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
-        
-            full_insurer_loss(self, samples, n_farms, inference_method, post_hoc_yield_data = None):
-
-            '''
 
     loss_dict[sampling_inference] = np.mean(loss_tmp[:min_samples, :], axis=1)
 
