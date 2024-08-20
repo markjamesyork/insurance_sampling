@@ -163,16 +163,6 @@ class MaizeYieldSampler:
 
     def interim_estimation_error_loss(self, inferred_yield, true_yield_mean, expected_yield, trend_yield):
         # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
-        loss_threshold = .95
-        guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
-        actual_payout = guarantee - np.clip(inferred_yield + trend_yield, 0, guarantee) # Amount the insurer pays the insuree
-        ideal_payout = np.clip(guarantee - (true_yield_mean + trend_yield), 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
-        loss = np.abs(actual_payout - ideal_payout)
-
-        return loss, actual_payout
-
-    def final_estimation_error_loss(self, inferred_yield, true_yield_mean, expected_yield, trend_yield):
-        # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
         loss_threshold = .85
         guarantee = loss_threshold * (expected_yield + trend_yield) # Numpy array of size [n_years, 1]
         actual_payout = guarantee - np.clip(inferred_yield + trend_yield, 0, guarantee) # Amount the insurer pays the insuree
@@ -181,15 +171,47 @@ class MaizeYieldSampler:
 
         return loss, actual_payout
 
-    def final_insurer_loss(self, samples, n_farms, inferred_yield, true_yield, expected_yield, trend_yield):
+    def interim_insurer_loss(self, samples):
+        # This function calculates the full insurer loss in expectation before the samples are taken or final yield is known
+
+        # Parameter settings
+        per_sample_measurement_cost = 15 # Two workers, two hours, $3.75 per hour, in USD
+        per_km_travel_cost = 0.7 # 30 km / hr, 7 km per liter, repairs = fuel * .5, 2 employees @ $3.75/hr, full calc in writeup, in USD
+        cost_per_unit_est_error = n_farms * 2 * 250 # Assumes that the average farm size is two hectares, and that the price of grain is $250 per ton (approximately the average 2024 price of maize in Ghana)
+        losses = []
+
+        # Create lats / lons array
+        filtered_df = sampler.yield_data.loc[indices]
+        lat_lon_df = filtered_df[['latitude', 'longitude']]
+        lat_lon_array = lat_lon_df.to_numpy()
+
+        # Distance traveled
+        distance_traveled, path = tsp(lat_lon_array)
+
+        # Estimation error when loss final yield is known
+        interim_estimation_error_loss = interim_estimation_error_loss(inferred_yield_vec[i], true_yield_mean, expected_yield)
+
+        # Add list of all loss types to losses list
+        loss += len(samples) * per_sample_measurement_cost + \
+                    distance_traveled * per_km_travel_cost +\
+                    final_estimation_error_loss    
+
+        return loss
+
+    def final_estimation_error_loss(self, inferred_yield, true_yield, expected_yield):
+        # This function calculates the loss to an insurer for a given estimate. We assume that overpayment and underpayment incur equal cost (e.g. Beta = 1)
+        loss_threshold = .85
+        guarantee = loss_threshold * expected_yield # Numpy array of size [n_years, 1]
+        actual_payout = guarantee - np.clip(inferred_yield, 0, guarantee) # Amount the insurer pays the insuree
+        ideal_payout = np.clip(guarantee - true_yield, 0, None) # Amount the insurer would pay the insuree with perfect knowledge of the yield
+        loss = np.abs(actual_payout - ideal_payout)
+
+        return loss, actual_payout
+
+    def final_insurer_loss(self, samples, n_farms, inferred_yield_vec, true_yield, expected_yield):
         # This function calculates the full insurer loss after the final yield is known. It removes a list of lists, where list i
         # contains the losses after sample i is taken, and each element of the list represents a sub-category of loss
         # [sample-taking cost, travel cost, measurement error cost]
-
-        loss_vector = final_full_insurer_loss(self, target_year_yields.shape[0], \
-                            inferred_yields[:, rep, year-years_to_sample[0]], post_hoc_yield_data = true_yield)
-
-        # This function calculates the full insurer utility, including estimation error loss, sample measurement cost and travel cost.
 
         # Parameter settings
         per_sample_measurement_cost = 15 # Two workers, two hours, $3.75 per hour, in USD
@@ -206,18 +228,15 @@ class MaizeYieldSampler:
             # Distance traveled
             distance_traveled, path = tsp(lat_lon_array[:i+1,:])
 
-            # Estimation error loss when final yield is not known
-            #interim_estimation_error_loss = interim_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
-
             # Estimation error when loss final yield is known
-            final_estimation_error_loss, actual_payouts = final_estimation_error_loss(inferred_yield, true_yield_mean, expected_yield, trend_yield)
+            final_estimation_error_loss, actual_payouts = final_estimation_error_loss(inferred_yield_vec[i], true_yield_mean, expected_yield)
 
             # Add list of all loss types to losses list
             losses += [i * per_sample_measurement_cost, \
                         distance_traveled * per_km_travel_cost, \
                         final_estimation_error_loss]
 
-        return losses
+        return losses # [in-field measurement cost, travel cost, estimation error loss]
 
     def higham_approximation(self, A):
         # Finds the nearest positive semidefinite matrix to A using CVXPY.
@@ -354,6 +373,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
     inferred_yield = np.zeros((max_samples, n_reps, len(years_to_sample)))
     sample_mean = np.zeros((max_samples, n_reps, len(years_to_sample)))
     true_yield_vector = []
+    insurer_losses = None
 
     # Load data
     sampler = MaizeYieldSampler()
@@ -374,8 +394,8 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
         print('Sampling %d' % year)
         if sampling_method == 'mic_greedy' or inference_method == 'normal_inference': sampler.initialize_covariance(covariate_data_path, year)
         target_year_yields = sampler.yield_data[sampler.yield_data['year'] == year]['yield']
-        true_yield_mean = target_year_yields.mean()
-        true_yield_vector += [true_yield_mean]
+        true_yield = target_year_yields.mean()
+        true_yield_vector += [true_yield]
         expected_yield = sampler.yield_data[sampler.yield_data['year'] != year]['yield'].mean() #calculates expected yield as the mean of yield from all years other than target year
         rep = 0
 
@@ -401,6 +421,7 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
             stop = False
             n_samples = 0
             sample_vals = []
+            insurer_losses_one_rep = None
 
             while stop == False:
                 # Pull Sample
@@ -411,7 +432,9 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
 
                 # Updating yield estimate
                 sample_mean[n_samples, rep, year-years_to_sample[0]] = np.mean(sample_vals)
-                if inference_method == 'normal_inference':
+                if inference_method == 'sample_mean':
+                    inferred_yield[n_samples, rep, year-years_to_sample[0]] = sample_mean[n_samples, rep, year-years_to_sample[0]]
+                elif inference_method == 'normal_inference':
                     sampler.update_mu_sigma(year, next_sample_idx, yield_val)
                     inferred_yield[n_samples, rep, year-years_to_sample[0]] = np.mean(np.hstack((sampler.conditional_mu, np.asarray(sample_vals)))) # Averages sample measurements and conditional mu for unmeasured samples
                 elif inference_method == 'GP_inference':
@@ -423,18 +446,26 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
 
             # Calculating insurer loss
             if loss_type == 'insurer_loss':
-                loss_vector = full_insurer_loss(self, sampler.sampled_indices, target_year_yields.shape[0], \
-                            inferred_yields[:, rep, year-years_to_sample[0]], post_hoc_yield_data = true_yield)
+                tmp_losses = final_full_insurer_loss(sampler.sampled_indices, target_year_yields.shape[0], \
+                            inferred_yields[:, rep, year-years_to_sample[0]], true_yield, expected_yield) # [in-field measurement cost, travel cost, estimation error loss]
+                if insurer_losses_one_rep == None: insurer_losses = np.asarray(tmp_losses)
+                else:
+                    tmp_losses = np.asarray(tmp_losses)
+                    continue
+                    '''for ChatGPT: "Please write python code which stacks a new 2D numpy array onto another 2D numpy along the 2 axis, resulting in a 3D numpy array. This code should also work if the base array upon which the new array is being stacked is already 3D, with the first two dimensions being the same as the two dimensions of the new array. The base array is called "insurer_losses", and the new array is called "tmp_losses.""
+                    '''
 
             sampler.sampled_indices = [] #reset to no samples taken
             rep += 1
+            if loss_type == 'insurer_loss':
+                insurer_losses_one_rep == None #For ChatGPT: "Please write Python code which takes the mean a 3D numpy array along axis 2, resulting in a 2D array."
+                if insurer_losses == None: insurer_losses = insurer_losses_one_rep
+                else:
+                    # Stack arrays here. # Resulting array has shape (3, n_samples, n_years)
+                    continue
 
     # Return predicted yield results
-    if inference_method == 'sample_mean':
-        return sample_mean, None, true_yield_vector, min_samples, expected_yield
-
-    elif inference_method in {'normal_inference', 'GP_inference'}:
-        return inferred_yield, sample_mean, true_yield_vector, min_samples, expected_yield
+    return inferred_yield, sample_mean, true_yield_vector, min_samples, expected_yield, insurer_losses
 
 
 
@@ -479,6 +510,7 @@ loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss'
 years_to_sample = np.arange(2019, 2022)
 inferred_yield_dict = {}
 loss_dict = {}
+insurer_loss_dict = {}
 if 'region' == 'Iowa': trend_params = [-4292.5011, 2.21671781] # Needed to calculate insurance threshold for insurer loss; [-4292.5011, 2.21671781] for Iowa, [0, 0] for Kenya
 else: trend_params = [0, 0]
 
@@ -486,8 +518,12 @@ else: trend_params = [0, 0]
 for sampling_method in sampling_methods:
     for inference_method in inference_methods:
         print('inference_method', inference_method)
-        inferred_yield_dict[sampling_method + '_' + inference_method], sample_mean, true_yield, min_samples, expected_yield = \
+        inferred_yield_dict[sampling_method + '_' + inference_method], sample_mean, true_yield, min_samples, expected_yield, insurer_losses = \
                     simulate(region, sampling_method, inference_method, n_reps, years_to_sample, log_yield, loss_type)
+        if loss_type == 'insurer_loss':
+            insurer_loss_dict[sampling_method + '_' + inference_method] = insurer_losses
+
+
         inferred_chart_array = inferred_yield_dict[sampling_method + '_' + inference_method].mean(axis=(1,2))
         if inference_method != 'sample_mean':
             sample_mean_chart_array = sample_mean.mean(axis=(1,2))
@@ -503,21 +539,19 @@ for sampling_inference in inferred_yield_dict.keys(): # Runs once for each sampl
     if loss_type == 'insurer_loss':
         trend_yield = np.asarray([trend_params[0] + trend_params[1] * year for year in years_to_sample]) # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
 
-        # Call the insurer loss calculation function once for each run of samples taken
-        for rep in range(n_reps):
-            losses = full_insurer_loss(sample_sequence, n_farms, inferred_yield, true_yield, expected_yield, trend_yield)
-
-            loss_tmp = np.mean(loss_tmp, axis=1)
-
-            print('loss_tmp.shape', loss_tmp.shape)
-
-
     loss_dict[sampling_inference] = np.mean(loss_tmp[:min_samples, :], axis=1)
 
 # 3 Charting & Saving Results
+# For ChatGPT: 'Please write python code which makes a stacked area chart with three layers. The code will intake a 3D numpy array, and average across dimension 2. It will then chart such that the layers are in dimension 0, and the x axis is along dimension 1. The height of each layer on the chart is the values in the numpy array.'
+# For ChatGPT: 'Please write python code which takes a 3D array and saves it as a .csv file titled 'yyyymmdd_str_.csv'
+# For ChatGPT: Please write a numerical integration in python for an integral which can be evaluated at any x value. Then write such a function for a double integral whose value we can assess at any (x,y) value.
+# For ChatGPT: Please write a genetic algorithm solver for a function which takes a binary vector of 1s and 0s as input.
+# Jake Jilinhoff
 
 # Number of samples taken
 samples = np.arange(1, min_samples + 1)
+
+
 
 
 # Plotting RMSE Alone
