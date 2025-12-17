@@ -1,6 +1,7 @@
 #This script reads covariance and yield data, implements a sampling strategy, and stores the results.
 
 from christofides import*
+from datetime import datetime
 from shortest_path import*
 import cvxpy as cp
 import numpy as np
@@ -220,16 +221,18 @@ class MaizeYieldSampler:
         losses = []
 
         # Create lats / lons array
-        filtered_df = sampler.yield_data.loc[indices]
+        filtered_df = self.yield_data.loc[samples]
         lat_lon_df = filtered_df[['latitude', 'longitude']]
         lat_lon_array = lat_lon_df.to_numpy()
 
         for i in range(len(samples)):
             # Distance traveled
-            distance_traveled, path = tsp(lat_lon_array[:i+1,:])
+            if i == 0: distance_traveled = 0
+            else:
+                distance_traveled, path = tsp(lat_lon_array[:i+1,:])
 
             # Estimation error when loss final yield is known
-            final_estimation_error_loss, actual_payouts = final_estimation_error_loss(inferred_yield_vec[i], true_yield_mean, expected_yield)
+            final_estimation_error_loss, actual_payouts = self.final_estimation_error_loss(inferred_yield_vec[i], true_yield, expected_yield)
 
             # Add list of all loss types to losses list
             losses += [i * per_sample_measurement_cost, \
@@ -444,21 +447,27 @@ def simulate(region, sampling_method, inference_method, n_reps, years_to_sample,
                 n_samples += 1
                 if n_samples >= min(target_year_samples, max_samples): stop = True
 
-            # Calculating insurer loss
-            if loss_type == 'insurer_loss':
-                tmp_losses = final_full_insurer_loss(sampler.sampled_indices, target_year_yields.shape[0], \
-                            inferred_yields[:, rep, year-years_to_sample[0]], true_yield, expected_yield) # [in-field measurement cost, travel cost, estimation error loss]
-                if insurer_losses_one_rep == None: insurer_losses = np.asarray(tmp_losses)
-                else:
-                    tmp_losses = np.asarray(tmp_losses)
-                    continue
-                    '''for ChatGPT: "Please write python code which stacks a new 2D numpy array onto another 2D numpy along the 2 axis, resulting in a 3D numpy array. This code should also work if the base array upon which the new array is being stacked is already 3D, with the first two dimensions being the same as the two dimensions of the new array. The base array is called "insurer_losses", and the new array is called "tmp_losses.""
-                    '''
+                # Calculating insurer loss
+                if loss_type == 'insurer_loss':
+                    tmp_losses = sampler.final_insurer_loss(sampler.sampled_indices, target_year_yields.shape[0], \
+                                inferred_yield[:, rep, year-years_to_sample[0]], true_yield, expected_yield) # [in-field measurement cost, travel cost, estimation error loss]
+                    if insurer_losses_one_rep == None: insurer_losses = np.asarray(tmp_losses)
+                    else:
+                        tmp_losses = np.asarray(tmp_losses)
+
+                        # Check if insurer_losses is 2D or 3D
+                        if insurer_losses.ndim == 2:
+                            # Expand insurer_losses to 3D by adding a new axis
+                            insurer_losses = np.expand_dims(insurer_losses, axis=2)
+                        
+                        # Stack the tmp_losses array along the third axis
+                        insurer_losses = np.dstack((insurer_losses, tmp_losses))
 
             sampler.sampled_indices = [] #reset to no samples taken
             rep += 1
+
             if loss_type == 'insurer_loss':
-                insurer_losses_one_rep == None #For ChatGPT: "Please write Python code which takes the mean a 3D numpy array along axis 2, resulting in a 2D array."
+                insurer_losses_one_rep == np.mean(insurer_losses, axis=2) # Average across dimension 2
                 if insurer_losses == None: insurer_losses = insurer_losses_one_rep
                 else:
                     # Stack arrays here. # Resulting array has shape (3, n_samples, n_years)
@@ -497,17 +506,74 @@ def plot_line_graph(var_1, var_2, x_label='X-axis', y_label='Y-axis', title='Lin
     plt.show()  # Display the graph
 
 
+def stacked_chart(data_3d = None, title = 'Insurer Losses'):
+    # This function takes a 3d numpy array, averages across the last dimension, then makes a stacked chart of the values, with each layer being a layer along the first (0) dimension
+
+    # Example 3D numpy array (replace this with your actual data)
+    if data_3d == None: data_3d = np.random.rand(3, 10, 5)  # 3 layers, 10 x-values, 5 elements in dimension 2
+
+    # Average across dimension 2
+    data_2d = np.mean(data_3d, axis=2)
+
+    # Generate x-values (you can replace this with your actual x-values if needed)
+    x_values = np.arange(data_2d.shape[1])
+
+    # Create a stacked area chart
+    plt.figure(figsize=(10, 6))
+    plt.stackplot(x_values, data_2d, labels=[f'Layer {i+1}' for i in range(data_2d.shape[0])])
+
+    # Add labels, title, and legend
+    plt.xlabel('n samples')
+    plt.ylabel('Values')
+    plt.title(title)
+    plt.legend(loc='upper left')
+
+    # Show the plot
+    plt.show()
+
+
+def insurer_loss_data_to_csv(data = None, title = 'insurer_loss'):
+    # This function takes a 3D numpy array of insurer loss data and saves it to a .csv file
+
+    # Example 3D numpy array (replace this with your actual data)
+    if data == None: data = np.random.rand(3, 4, 5)  # Example 3D array
+
+    # Get the current date in 'yyyymmdd' format
+    current_date = datetime.now().strftime('%Y%m%d')
+
+    # Initialize a list to store flattened 2D slices
+    flattened_slices = []
+
+    # Flatten each 2D slice and append to the list
+    for i in range(data.shape[0]):
+        flattened_slice = data[i].flatten()
+        flattened_slices.append(flattened_slice)
+
+    # Convert the list of flattened slices into a DataFrame
+    df = pd.DataFrame(flattened_slices)
+
+    # Define the filename with the current date
+    filename = f"%s{current_date}_%s_.csv" % ('data/', title)
+
+
+    # Save the DataFrame to a CSV file
+    df.to_csv(filename, index=False, header=False)
+
+    # Output the filename for reference
+    print(f"Data saved to {filename}")
+
+
 
 # EXECUTION:
 
 # 0 Simulation Settings
 region = 'Kenya'
 log_yield = True # If True, read yield data as log(1 + yield). This is to make lognormal data look more normal
-sampling_methods = ['random', 'GP_mic_greedy'] # ['random'] # Options: 'random', 'mic_greedy', 'GP_mic_greedy'
+sampling_methods = ['random'] #['random', 'GP_mic_greedy'] #  Options: 'random', 'mic_greedy', 'GP_mic_greedy'
 inference_methods = ['sample_mean', 'GP_inference'] # Options: 'sample_mean', 'normal_inference', 'GP'
-n_reps = 10
-loss_type = 'RMSE' # Options: 'RMSE', 'insurer_loss'
-years_to_sample = np.arange(2019, 2022)
+n_reps = 2
+loss_type = 'RMSE' #'insurer_loss' # Options: 'RMSE', 'insurer_loss'
+years_to_sample = np.arange(2019, 2020)
 inferred_yield_dict = {}
 loss_dict = {}
 insurer_loss_dict = {}
@@ -522,7 +588,8 @@ for sampling_method in sampling_methods:
                     simulate(region, sampling_method, inference_method, n_reps, years_to_sample, log_yield, loss_type)
         if loss_type == 'insurer_loss':
             insurer_loss_dict[sampling_method + '_' + inference_method] = insurer_losses
-
+            stacked_chart(insurer_losses, title = 'Insurer Loss %s' % (sampling_method + ' ' + inference_method))
+            insurer_loss_data_to_csv(insurer_losses, 'ins_loss_' + sampling_method + '_' + inference_method)
 
         inferred_chart_array = inferred_yield_dict[sampling_method + '_' + inference_method].mean(axis=(1,2))
         if inference_method != 'sample_mean':
@@ -538,6 +605,7 @@ for sampling_inference in inferred_yield_dict.keys(): # Runs once for each sampl
 
     if loss_type == 'insurer_loss':
         trend_yield = np.asarray([trend_params[0] + trend_params[1] * year for year in years_to_sample]) # This is the base trendline yield that should be added to expected yield. If yield data is not trend-adjusged, this will be zero.
+
 
     loss_dict[sampling_inference] = np.mean(loss_tmp[:min_samples, :], axis=1)
 

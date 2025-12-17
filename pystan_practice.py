@@ -3,10 +3,12 @@ from cmdstanpy import CmdStanModel
 import numpy as np
 from pathlib import Path
 import datetime as dt
+import matplotlib.pyplot as plt
 
 
 # Choose which model type to simulate, and the appropriate function will be run
-model_type = 'hurdle' # 'normal, 'mvn', 'hurdle'
+model_type = 'na' # 'normal, 'mvn', 'hurdle' #'na' just skips simulating a model
+generate_hurdle_histogram = True # Set to true to generate hurdle model data from a given parameter set and chart it on a histogram
 
 def normal():
   # 1. Choose true parameters and generate fake data
@@ -437,4 +439,52 @@ def hurdle():
 if model_type == 'normal': normal()
 elif model_type == 'mvn': mvn()
 elif model_type == 'hurdle': hurdle()
+
+
+
+def generate_hurdle_data():
+  # This function generates samples from a hurdle model given set parameters, and it creates a histogram of simulated data
+  rng = np.random.default_rng(123)
+
+  N = 10000
+  D = 2
+
+  # Example "geospatial" coordinates in a 10x10 box.
+  # For real lat/lon, consider projecting to meters/km first.
+  X = rng.uniform(0.0, 500.0, size=(N, D))
+
+  # True parameters (edit as you like)
+
+  ''' 2022 values
+  true = dict(
+      mu_f=0.662443, ell_f=7.883050, sigma_f=0.807079, sigma_noise=0.253567,
+      mu_g=1.245220, ell_g=1.711860, sigma_g=0.818314
+  )
+  '''
+  true = dict(
+      mu_f=0.765253, ell_f=9.89386, sigma_f=0.991509, sigma_noise=0.422880,
+      mu_g=2.803790, ell_g=1.277070, sigma_g=1.014490)
+
+  y, z, f_true, g_true, p_true = simulate_hurdle_gp(
+      X, rng,
+      mu_f=true["mu_f"], ell_f=true["ell_f"], sigma_f=true["sigma_f"], sigma_noise=true["sigma_noise"],
+      mu_g=true["mu_g"], ell_g=true["ell_g"], sigma_g=true["sigma_g"]
+  )
+
+  print(f"Simulated N={N} points; nonzero fraction = {z.mean():.3f}")
+
+  # 1) Histogram of realized yields (including zeros)
+  plt.figure()
+  plt.hist(y, bins=int(N**.5 + 1))
+  plt.xlabel("Yield")
+  plt.ylabel("Count")
+  plt.title("Simulated yields (including zeros)")
+  plt.tight_layout()
+  plt.show()
+
+  return
+
+if generate_hurdle_histogram == True:
+  generate_hurdle_data()
+
 
